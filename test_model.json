@@ -1,0 +1,20 @@
+{
+            "model_name": "TestModel",
+            "parameters": {
+                "beta": 0.96,
+                "sigma": 2.0,
+                "alpha": 0.33,
+                "A": 1.0
+            },
+            "agents": [{
+                "grids": {
+                    "asset_a": {
+                        "type": "Log-spaced",
+                        "size": 100,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "curvature": 2.0
+                    }
+                }
+            }]
+        }

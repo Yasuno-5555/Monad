@@ -1,0 +1,10 @@
+^C:\USERS\KOUNO\DESKTOP\PROJECTS\MONAD\BUILD3\CMAKEFILES\A3AF16FB9633094E939BEEDACFA317CE\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/kouno/Desktop/Projects/Monad -BC:/Users/kouno/Desktop/Projects/Monad/build3 --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/kouno/Desktop/Projects/Monad/build3/MonadEngine.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

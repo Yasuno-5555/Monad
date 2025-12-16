@@ -1,0 +1,26 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/json-build/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/doc/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/doc/examples/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/doc/special_examples/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/doc/snippets/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/test/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/failtest/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/blas/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/lapack/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/Eigen/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/Eigen/CXX11/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/doc/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/doc/examples/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/doc/snippets/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/unsupported/test/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/demos/cmake_install.cmake",
+		"C:/Users/kouno/Desktop/Projects/Monad/build_phase3/_deps/eigen-build/scripts/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

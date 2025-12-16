@@ -1,0 +1,25 @@
+{
+    "model_name": "Standard_HANK",
+    "parameters": {
+        "beta": 0.96,
+        "sigma": 2.0,
+        "alpha": 0.33,
+        "A": 1.0,
+        "r_guess": 0.02,
+        "run_shock": true
+    },
+    "agents": [
+        {
+            "name": "Household",
+            "grids": {
+                "asset_a": {
+                    "type": "Log-spaced",
+                    "n_points": 200,
+                    "min": 0.0,
+                    "max": 100.0,
+                    "potency": 2.0
+                }
+            }
+        }
+    ]
+}

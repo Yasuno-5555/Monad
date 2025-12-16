@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\kouno\Desktop\Projects\Monad\build\CMakeFiles\6c5bc96129458b580209ad37dec4e9f9\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{700835FD-5BF4-3984-955C-3809E3A661D2}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
