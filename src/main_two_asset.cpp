@@ -4,8 +4,10 @@
 #include "ssj/JacobianBuilder3D.hpp"
 #include "ssj/FakeNewsAggregator.hpp"
 #include "ssj/SsjSolver3D.hpp"
+#include "ssj/GeneralEquilibrium.hpp"
+#include "analysis/InequalityAnalyzer.hpp"
 #include <fstream>
-#include <vector>
+#include <iomanip>
 #include <cmath>
 #include <iomanip>
 #include <memory> 
@@ -249,6 +251,122 @@ int main() {
             std::cout << "  IRF written to irf_test.csv" << std::endl;
         } else {
             std::cout << "  [FAIL] Missing Jacobian Block C-rm" << std::endl;
+        }
+
+        // 9. Verify Phase 3 Step 1: General Equilibrium Solver (Multiplier)
+        std::cout << "\n--- Verifying General Equilibrium (Phase 3) ---" << std::endl;
+        
+        Monad::GeneralEquilibrium ge_solver(ssj_solver, T);
+        
+        // Define Shock: 1% increase in r_m (annualized? usually bps). 
+        // Let's say 0.01 shock with 0.8 persistence
+        Eigen::VectorXd dr_m(T);
+        double rho = 0.8;
+        double shock_size = 0.01;
+        for(int t=0; t<T; ++t) dr_m[t] = shock_size * std::pow(rho, t);
+        
+        auto ge_results = ge_solver.solve_monetary_shock(dr_m);
+        
+        Eigen::VectorXd dY = ge_results["dY"];
+        Eigen::VectorXd dC = ge_results["dC"];
+        Eigen::VectorXd dC_direct = ge_results["dC_direct"];
+        
+        std::cout << "GE Results:" << std::endl;
+        std::cout << "  dY Impact (t=0): " << dY[0] << std::endl;
+        std::cout << "  dC Direct Impact (t=0): " << dC_direct[0] << std::endl;
+        
+        double multiplier = dY[0] / dC_direct[0];
+        std::cout << "  Impact Multiplier (dY/dC_direct): " << multiplier << std::endl;
+        
+        if(std::abs(multiplier) > 1.0) {
+             std::cout << "  [PASS] Multiplier > 1 (Keynesian Amplification)" << std::endl;
+        } else {
+             std::cout << "  [INFO] Multiplier <= 1 (Dampening or Weak Feedback)" << std::endl;
+        }
+
+        // CSV Output
+        std::ofstream ge_file("ge_irf.csv");
+        ge_file << "t,dr_m,dY,dC,dC_direct,dC_indirect\n";
+        for(int t=0; t<T; ++t) {
+            ge_file << t << "," << dr_m[t] << "," << dY[t] << "," 
+                    << dC[t] << "," << dC_direct[t] << "," << ge_results["dC_indirect"][t] << "\n";
+        }
+        ge_file.close();
+        std::cout << "  GE IRF written to ge_irf.csv" << std::endl;
+
+        std::cout << "  GE IRF written to ge_irf.csv" << std::endl;
+
+        // 10. Verify Phase 3 Step 2: Inequality Analysis
+        std::cout << "\n--- Verifying Inequality Analysis (Phase 3 Step 2) ---" << std::endl;
+        
+        // Need partial map for analyzer. access private? No, ssj_solver computes them internally.
+        // We should expose partials from SsjSolver3D or re-compute.
+        // Re-computing is fine for now, or add getter.
+        // SsjSolver3D stores jac_builder. Call compute_partials directly?
+        // Let's instantiate a new builder or expose it. SsjSolver3D has jac_builder private.
+        // Actually, we can just use the partials computed inside ssj_solver? 
+        // compute_block_jacobians returns Matrices, not partials map.
+        // Let's quickly add a getter or friend, or just re-run compute_partials.
+        // Re-run is safest/easiest given no interface change.
+        
+        
+        { // Scope for Inequality Analysis
+        Monad::JacobianBuilder3D jac_builder(grid, params, income, E_Vm_ss, E_V_ss);
+        auto partials = jac_builder.compute_partials(policy);
+        
+        Monad::InequalityAnalyzer analyzer(grid, D, policy, partials);
+        
+        // Pack GE results into map for analyzer
+        std::map<std::string, Eigen::VectorXd> dU_paths;
+        dU_paths["rm"] = dr_m;
+        dU_paths["w"] = dY; // Assume w = Y
+        
+        auto group_res = analyzer.analyze_consumption_response(dU_paths);
+        
+        std::cout << "Inequality IRF (t=0):" << std::endl;
+        std::cout << "  Top 10% dC:    " << group_res.top10[0] << std::endl;
+        std::cout << "  Bottom 50% dC: " << group_res.bottom50[0] << std::endl;
+        std::cout << "  Debtors dC:    " << group_res.debtors[0] << std::endl;
+        
+        if (std::abs(group_res.debtors[0]) > std::abs(group_res.top10[0])) {
+             std::cout << "  [PASS] Debtors are more sensitive to rate hike." << std::endl;
+             std::cout << "  [INFO] Top 10% sensitive (Wealth Effect dominates?)" << std::endl;
+        }
+
+        // Export IRF Groups CSV
+        std::ofstream irf_groups("irf_groups.csv");
+        irf_groups << "time,top10,bottom50,debtors,aggregate\n";
+        for(int t=0; t<T; ++t) {
+            irf_groups << t << "," 
+                       << group_res.top10[t] << "," 
+                       << group_res.bottom50[t] << "," 
+                       << group_res.debtors[t] << ","
+                       << dC[t] << "\n";
+        }
+        irf_groups.close();
+        std::cout << "  Exported irf_groups.csv" << std::endl;
+
+        // Export Heatmap CSV (Sensitivity at t=0)
+        // dC/dr at t=0 corresponds to the immediate policy response.
+        // We use compute_consumption_heatmap for t=0 shock.
+        // Note: dU_paths contains the full path. 
+        // We want the sensitivity map (dC_i / dr_m).
+        // The analyzer computes dC_total = sum(dC/dU * dU).
+        // If we want raw sensitivity, we can just use partials directly or pass a unit shock at t=0.
+        // But the user asked for "Heatmap Series ... dC(m,a) of 2D heatmap".
+        // Let's output the actual predicted dC at t=0 (which includes the shock size).
+        
+        auto heatmap_vals = analyzer.compute_consumption_heatmap(dU_paths, 0); // t=0
+        
+        std::ofstream heat_file("heatmap_sensitivity.csv");
+        heat_file << "m_val,a_val,dC_dr\n";
+        for(int i=0; i<grid.total_size; ++i) {
+             // Only output if relevant (sparse?) No, heatmap needs full grid usually.
+             auto vals = grid.get_values(i);
+             heat_file << vals.first << "," << vals.second << "," << heatmap_vals[i] << "\n";
+        }
+        heat_file.close();
+        std::cout << "  Exported heatmap_sensitivity.csv" << std::endl;
         }
 
         std::cout << "Done." << std::endl;

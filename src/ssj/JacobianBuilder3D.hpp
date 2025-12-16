@@ -41,7 +41,8 @@ public:
         // r_m: Liquid Rate
         // r_a: Illiquid Rate
         // chi: Adjustment Cost Scale (for completeness)
-        std::vector<std::string> inputs = {"rm", "ra", "chi"}; 
+        // inputs list: rm, ra, chi, w (Aggregate Wage)
+        std::vector<std::string> inputs = {"rm", "ra", "chi", "w"}; 
 
         for (const auto& input_name : inputs) {
             
@@ -49,6 +50,7 @@ public:
             Dbl r_m = (input_name == "rm") ? Dbl(params.r_m, 1.0) : Dbl(params.r_m);
             Dbl r_a = (input_name == "ra") ? Dbl(params.r_a, 1.0) : Dbl(params.r_a);
             Dbl chi_param = (input_name == "chi") ? Dbl(params.chi, 1.0) : Dbl(params.chi);
+            Dbl w_param = (input_name == "w") ? Dbl(1.0, 1.0) : Dbl(1.0); // Normalize SS Wage = 1.0
             
             // 2. Output Vectors
             std::vector<double> dc_dX(N);
@@ -71,7 +73,7 @@ public:
 
                 DualRes res;
                 if (!is_adjusting) {
-                    res = solve_no_adjust_dual(iz, im, ia, m_curr, a_curr, z_val, r_m, r_a);
+                    res = solve_no_adjust_dual(iz, im, ia, m_curr, a_curr, z_val, r_m, r_a, w_param);
                 } else {
                     // For Adjusting: We must target the SAME a' as SS.
                     // The SS policy 'a_pol[i]' tells us the target a'.
@@ -83,7 +85,7 @@ public:
                     if(ia_target >= grid.a_grid.size) ia_target = grid.a_grid.size - 1;
                     // Could check distance to ensure exact match, but valid enough.
                     
-                    res = solve_adjust_dual(iz, im, ia, ia_target, m_curr, a_curr, z_val, r_m, r_a, chi_param);
+                    res = solve_adjust_dual(iz, im, ia, ia_target, m_curr, a_curr, z_val, r_m, r_a, chi_param, w_param);
                 }
                 
                 dc_dX[i] = res.c.der;
@@ -192,7 +194,7 @@ private:
     // --- Solvers ---
 
     DualRes solve_no_adjust_dual(int iz, int im, int ia, double m_curr_fixed, double a_curr_fixed, 
-                                 double z_val, Dbl r_m, Dbl r_a) {
+                                 double z_val, Dbl r_m, Dbl r_a, Dbl w) {
         
         // 1. Next Scale
         Dbl a_next = Dbl(a_curr_fixed) * (Dbl(1.0) + r_a);
@@ -238,8 +240,8 @@ private:
             // E_Vm_next depends on a_next = a(1+r_a). So c depends on r_a.
             
             // 3. Finding Endogenous m_curr
-            // c + m' = (1+r_m)m + z  => m = (c + m' - z) / (1+r_m)
-            Dbl num = c + m_prime_grid - z_val;
+            // c + m' = (1+r_m)m + w*z  => m = (c + m' - w*z) / (1+r_m)
+            Dbl num = c + m_prime_grid - w * z_val;
             Dbl m_curr_endo = num / (Dbl(1.0) + r_m);
             
             c_endo[im_next] = c;
@@ -267,7 +269,7 @@ private:
 
     DualRes solve_adjust_dual(int iz, int im, int ia, int ia_target, 
                               double m_curr_fixed, double a_curr_fixed, double z_val, 
-                              Dbl r_m, Dbl r_a, Dbl chi) {
+                              Dbl r_m, Dbl r_a, Dbl chi, Dbl w) {
         
         // 1. Target Illiquid Asset (Fixed Regime: Target SS choice)
         Dbl a_next = Dbl(grid.a_grid.nodes[ia_target]); // Fixed target grid point?
@@ -308,9 +310,9 @@ private:
             Dbl rhs = Dbl(params.beta) * emv; // Constant
             Dbl c = u_prime_inv_dual(rhs);    // Constant
             
-            // Budget: c + m' = (1+r_m)m + z - total_outflow
-            // m = (c + m' - z + total_outflow) / (1+r_m)
-            Dbl num = c + m_prime_grid - z_val + total_outflow;
+            // Budget: c + m' = (1+r_m)m + w*z - total_outflow
+            // m = (c + m' - w*z + total_outflow) / (1+r_m)
+            Dbl num = c + m_prime_grid - w * z_val + total_outflow;
             Dbl m_curr_endo = num / (Dbl(1.0) + r_m);
             
             c_endo[im_next] = c;
