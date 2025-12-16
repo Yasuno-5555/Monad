@@ -1,0 +1,304 @@
+#pragma once
+#include <algorithm>
+#include <iostream>
+#include <cmath>
+#include "../grid/MultiDimGrid.hpp"
+#include "../kernel/TwoAssetKernel.hpp"
+#include "../Params.hpp"
+
+namespace Monad {
+
+class TwoAssetSolver {
+    const MultiDimGrid& grid;
+    const TwoAssetParam& params;
+    
+public:
+    // Internal buffer for expected values E[V(m', a', z')]
+    std::vector<double> E_V_next; 
+    std::vector<double> E_Vm_next; // Marginal Value E[dV/dm]
+
+    TwoAssetSolver(const MultiDimGrid& g, const TwoAssetParam& p) 
+        : grid(g), params(p), E_V_next(g.total_size), E_Vm_next(g.total_size) {
+    }
+
+    // --- Core Solver Method ---
+    // Returns max difference (L-infinity norm) between old and new policy value function
+    double solve_bellman(const TwoAssetPolicy& guess, TwoAssetPolicy& result, 
+                         const IncomeProcess& income) {
+        
+        // 1. Expectation Step (Matrix Mult over z)
+        
+        compute_expectations(guess, income);
+
+        double max_diff = 0.0; // Initialize
+        // 2. Solve Conditional Value Functions (Loop over z and a)
+        for (int iz = 0; iz < grid.n_z; ++iz) {
+            for (int ia = 0; ia < grid.N_a; ++ia) {
+                
+                double z_val = income.z_grid[iz];
+                
+                // --- Problem A: No Adjustment (d=0) ---
+                solve_no_adjust_slice(iz, ia, z_val, result);
+
+                // --- Problem B: Adjustment (d != 0) ---
+                solve_adjust_slice(iz, ia, z_val, result);
+            }
+        }
+
+        // 3. Convergence Check
+        // Upper envelope was already applied incrementally in solve_adjust_slice
+        finalize_policy(guess, result, max_diff);
+
+        return max_diff;
+    }
+
+private:
+    // --- Helpers ---
+
+    double adj_cost(double d, double a_curr) const {
+        if (std::abs(d) < 1e-9) return 0.0;
+        // Simple quadratic adjustment cost: chi * d^2
+        return params.chi * d * d; 
+    }
+
+    double u(double c) const {
+        if (c <= 1e-9) return -1e9;
+        if (std::abs(params.sigma - 1.0) < 1e-5) return std::log(c);
+        return std::pow(c, 1.0 - params.sigma) / (1.0 - params.sigma);
+    }
+
+    double inv_u_prime(double val) const {
+        if (val <= 1e-9) return 1e9; // Avoid Infinity
+        return std::pow(val, -1.0/params.sigma);
+    }
+
+    void compute_expectations(const TwoAssetPolicy& next_pol, const IncomeProcess& income) {
+        for(int flat_idx = 0; flat_idx < grid.total_size; ++flat_idx) {
+            int im, ia, iz;
+            grid.get_coords(flat_idx, im, ia, iz);
+            
+            double ev = 0.0;
+            double evm = 0.0;
+            
+            for(int iz_next = 0; iz_next < grid.n_z; ++iz_next) {
+                double prob = income.Pi_flat[iz * grid.n_z + iz_next];
+                if(prob > 1e-10) {
+                    int next_idx = grid.idx(im, ia, iz_next);
+                    ev += prob * next_pol.value[next_idx];
+                    
+                    double c_next = next_pol.c_pol[next_idx];
+                    // V_m = u'(c) * (1+r_m)
+                    double u_prime = std::pow(c_next, -params.sigma);
+                    evm += prob * u_prime * (1.0 + params.r_m);
+                }
+            }
+            E_V_next[flat_idx] = ev;
+            E_Vm_next[flat_idx] = evm;
+        }
+    }
+
+    // --- No Adjustment Solver ---
+    void solve_no_adjust_slice(int iz, int ia, double z_val, TwoAssetPolicy& res) {
+        double a_curr = grid.a_grid.nodes[ia];
+        // Recapitalization Logic: a' grows by interest if not adjusted
+        double a_next_no_adjust = a_curr * (1.0 + params.r_a);
+        
+        int Nm = grid.N_m;
+        std::vector<double> c_endo(Nm);
+        std::vector<double> m_endo(Nm);
+        
+        for(int im_next=0; im_next < Nm; ++im_next) {
+            double m_next = grid.m_grid.nodes[im_next];
+            
+            // Interpolate Expected Marginal Value at (m_next, a_next_no_adjust) with CURRENT z (iz)
+            double emv = interpolate_2d_m_a(E_Vm_next, iz, m_next, a_next_no_adjust);
+            
+            double rhs = params.beta * emv;
+            double c = inv_u_prime(rhs);
+            
+            // Budget: c + m' = (1+rm)m + w*z
+            double m_curr = (c + m_next - z_val) / (1.0 + params.r_m);
+            
+            c_endo[im_next] = c;
+            m_endo[im_next] = m_curr;
+        }
+        
+        // Re-interpolate to fixed m-grid
+        for(int im=0; im < Nm; ++im) {
+            double m_fixed = grid.m_grid.nodes[im];
+            
+            // 1D Linear Interpolation with Extrapolation handling (Constrained)
+            double c_val, m_prime_val;
+            
+            // Assuming borrowing constraint m_min is params.m_min
+            // If m_fixed < m_endo[0], we are constrained. 
+            // The unconstrained choice implies m' < m_min_grid.
+            // Constraint binds: m' = m_min (lower bound of grid)
+            
+            if(m_fixed < m_endo[0]) {
+                m_prime_val = grid.m_grid.nodes[0]; // Assuming grid[0] is hard constraint
+                
+                // Using budget to find C
+                // c = (1+r_m)m + z - m'
+                c_val = (1.0 + params.r_m) * m_fixed + z_val - m_prime_val;
+            } else {
+                c_val = interp_1d(m_endo, c_endo, m_fixed);
+                m_prime_val = interp_1d(m_endo, grid.m_grid.nodes, m_fixed);
+            }
+            
+            // Calculate Value
+            // V = u(c) + beta * interp_2d(E_V, m', a')
+            double ev = interpolate_2d_m_a(E_V_next, iz, m_prime_val, a_next_no_adjust);
+            
+            // Ensure c > 0
+            if(c_val < 1e-9) c_val = 1e-9;
+            
+            double val = u(c_val) + params.beta * ev;
+            
+            int idx = grid.idx(im, ia, iz);
+            res.value[idx] = val;
+            res.c_pol[idx] = c_val;
+            res.m_pol[idx] = m_prime_val;
+            res.a_pol[idx] = a_next_no_adjust;
+            res.d_pol[idx] = 0.0;
+            res.adjust_flag[idx] = 0.0;
+        }
+    }
+
+    // --- Adjustment Solver ---
+    void solve_adjust_slice(int iz, int ia, double z_val, TwoAssetPolicy& res) {
+        double a_curr = grid.a_grid.nodes[ia];
+        int Nm = grid.N_m;
+        int Na = grid.N_a;
+
+        // Loop over potential targets a_next (Discrete Choice)
+        for (int ia_next = 0; ia_next < Na; ++ia_next) {
+            double a_next = grid.a_grid.nodes[ia_next];
+
+            // 1. Calculate Adjustment details
+            double d = a_next - a_curr * (1.0 + params.r_a); 
+            double cost = adj_cost(d, a_curr);
+            double total_outflow = d + cost;
+            
+            // If d is exactly zero (or close), this is "Adjust to self".
+            // Theoretically same as No Adjust if chi(0)=0.
+            // But we compute it anyway to be robust.
+
+            // 2. Conditional EGM (Solve optimal consumption for THIS choice of a')
+            std::vector<double> c_endo(Nm);
+            std::vector<double> m_endo(Nm);
+
+            for(int im_next=0; im_next < Nm; ++im_next) {
+                 double m_next = grid.m_grid.nodes[im_next];
+
+                 // Interpolate Expected Marginal Value at (m_next, a_next)
+                 // a_next is fixed grid point ia_next, just interp on m
+                 double emv = interp_1d_slice_m(E_Vm_next, iz, ia_next, m_next);
+                 
+                 double rhs = params.beta * emv;
+                 double c = inv_u_prime(rhs);
+                 
+                 // Budget: c + m' = (1+rm)m + w*z - total_outflow
+                 double m_required = (c + m_next - z_val + total_outflow) / (1.0 + params.r_m);
+
+                 c_endo[im_next] = c;
+                 m_endo[im_next] = m_required;
+            }
+
+            // 3. Re-interpolate and Upper Envelope
+            for(int im=0; im < Nm; ++im) {
+                double m_fixed = grid.m_grid.nodes[im];
+                double c_adj, m_prime_adj;
+
+                if(m_fixed < m_endo[0]) {
+                    // Constraint Binding
+                    m_prime_adj = grid.m_grid.nodes[0];
+                    c_adj = (1.0 + params.r_m) * m_fixed + z_val - total_outflow - m_prime_adj;
+                } else {
+                    c_adj = interp_1d(m_endo, c_endo, m_fixed);
+                    m_prime_adj = interp_1d(m_endo, grid.m_grid.nodes, m_fixed);
+                }
+                
+                // If c < 0 (Cost too high given liquid assets), skipping not enough.
+                if(c_adj <= 1e-9) {
+                    continue; // Infeasible choice
+                } else {
+                    // Calculate Value (a_next is on grid!)
+                    // interp_1d_slice_m on (E_V_next, iz, ia_next, m_prime_adj) is sufficient!
+                    double ev = interp_1d_slice_m(E_V_next, iz, ia_next, m_prime_adj);
+                    double val_adj = u(c_adj) + params.beta * ev;
+                
+                    // 4. Update if Better
+                    int idx = grid.idx(im, ia, iz);
+                    if (val_adj > res.value[idx]) {
+                        res.value[idx] = val_adj;
+                        res.c_pol[idx] = c_adj;
+                        res.m_pol[idx] = m_prime_adj;
+                        res.a_pol[idx] = a_next;
+                        res.d_pol[idx] = d;
+                        res.adjust_flag[idx] = 1.0;
+                    }
+                }
+            }
+        }
+    }
+
+    void finalize_policy(const TwoAssetPolicy& old, TwoAssetPolicy& res, double& diff) {
+        for(int k=0; k<grid.total_size; ++k) {
+            double d = std::abs(res.value[k] - old.value[k]);
+            if(d > diff) diff = d;
+        }
+        // Ideally we check max diff of c_pol or value. Here Value.
+    }
+    
+    // --- Interpolation Helpers ---
+
+    double interp_1d(const std::vector<double>& x, const std::vector<double>& y, double xi) const {
+        if (xi <= x.front()) return y.front();
+        if (xi >= x.back()) return y.back();
+        auto it = std::lower_bound(x.begin(), x.end(), xi);
+        int idx = std::distance(x.begin(), it);
+        double t = (xi - x[idx-1]) / (x[idx] - x[idx-1]);
+        return y[idx-1] + t * (y[idx] - y[idx-1]);
+    }
+
+    double interpolate_2d_m_a(const std::vector<double>& data, int iz, double m, double a) const {
+        return interp_2d_slice(data, iz, m, a);
+    }
+    
+    double interp_2d_slice(const std::vector<double>& data, int iz, double m, double a) const {
+        const auto& ag = grid.a_grid.nodes;
+        if(a <= ag.front()) return interp_1d_slice_m(data, iz, 0, m);
+        if(a >= ag.back()) return interp_1d_slice_m(data, iz, grid.N_a-1, m);
+        
+        auto it = std::lower_bound(ag.begin(), ag.end(), a);
+        int ia = std::distance(ag.begin(), it);
+        
+        double t_a = (a - ag[ia-1]) / (ag[ia] - ag[ia-1]);
+        
+        double v1 = interp_1d_slice_m(data, iz, ia-1, m);
+        double v2 = interp_1d_slice_m(data, iz, ia, m);
+        
+        return v1 + t_a * (v2 - v1);
+    }
+    
+    double interp_1d_slice_m(const std::vector<double>& data, int iz, int ia, double m) const {
+        int offset = grid.idx(0, ia, iz);
+        
+        const auto& mg = grid.m_grid.nodes;
+        
+        if(m <= mg.front()) return data[offset];
+        if(m >= mg.back()) return data[offset + grid.N_m - 1];
+        
+        auto it = std::lower_bound(mg.begin(), mg.end(), m);
+        int im = std::distance(mg.begin(), it);
+        
+        double t_m = (m - mg[im-1]) / (mg[im] - mg[im-1]);
+        double y1 = data[offset + im - 1];
+        double y2 = data[offset + im];
+        
+        return y1 + t_m * (y2 - y1);
+    }
+};
+
+} // namespace Monad

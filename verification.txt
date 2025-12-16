@@ -1,0 +1,5 @@
+Lambda NonZeros: 29764
+Sum of D_ss: 1
+Lambda Col Sums Min: 1 Max: 1
+L2 Norm Error: 1.71216e-08
+Max Error: 9.8385e-09
