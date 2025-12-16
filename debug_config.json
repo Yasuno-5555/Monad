@@ -1,0 +1,36 @@
+{
+    "model_name": "debug",
+    "parameters": {
+        "beta": 0.96,
+        "sigma": 2.0,
+        "alpha": 0.33,
+        "A": 1.0,
+        "r_guess": 0.02,
+        "phi_pi": 2.0,
+        "theta_w": 0.75,
+        "unemployment_benefit": 0.4
+    },
+    "agents": [
+        {
+            "name": "Household",
+            "grids": {
+                "asset_a": {
+                    "type": "Log-spaced",
+                    "n_points": 200,
+                    "min": 0.001,
+                    "max": 100.0,
+                    "potency": 2.0
+                }
+            }
+        }
+    ],
+    "income_process": {
+        "n_z": 1,
+        "z_grid": [
+            1.0
+        ],
+        "transition_matrix": [
+            1.0
+        ]
+    }
+}

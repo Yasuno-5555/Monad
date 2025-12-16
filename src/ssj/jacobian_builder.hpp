@@ -5,6 +5,7 @@
 #include "../UnifiedGrid.hpp"
 #include "../Params.hpp"
 #include "../Dual.hpp"
+#include "../kernel/TaxSystem.hpp"
 
 namespace Monad {
 
@@ -84,8 +85,6 @@ public:
         Lambda.setFromTriplets(triplets.begin(), triplets.end());
         return Lambda;
     }
-
-
 
     // Output: Sparse Transition Matrix (Lambda)
     static SparseMat build_transition_matrix(const std::vector<double>& a_pol, const UnifiedGrid& grid) {
@@ -180,6 +179,12 @@ private:
         double beta = params.get_required("beta");
         double sigma = params.get("sigma", 2.0);
 
+        // Tax System
+        Monad::TaxSystem tax_sys;
+        tax_sys.lambda = params.get("tax_lambda", 1.0);
+        tax_sys.tau = params.get("tax_tau", 0.0);
+        tax_sys.transfer = params.get("tax_transfer", 0.0);
+
         std::vector<Duald> c_endo(size);
         std::vector<Duald> a_endo(size);
         
@@ -209,10 +214,9 @@ private:
                 if (c.val < 1e-4) c = 1e-4; // Safety
                 c_endo[idx] = c;
                 
-                // Budget: c + a' = (1+r)a + wz
-                // a = (c + a' - wz) / (1+r)
                 Duald a_prime = grid.nodes[i];
-                a_endo[idx] = (c + a_prime - w * z) / (1.0 + r);
+                Duald resources = c + a_prime;
+                a_endo[idx] = tax_sys.solve_asset_from_budget(resources, r, w, z);
             }
         }
         
@@ -225,21 +229,24 @@ private:
             for(int i=0; i<na; ++i) {
                 int idx = offset + i;
                 double a_target = grid.nodes[i];
+                Duald net_inc = tax_sys.get_net_income(r * a_target + w * z);
                 
-                // Binding constraint or Extrapolation
+                // Binding constraint
                 if (a_target <= a_endo[offset].val) {
                     res.a_pol[idx] = grid.nodes[0];
-                    res.c_pol[idx] = (1.0 + r) * a_target + w * z - res.a_pol[idx];
+                    res.c_pol[idx] = a_target + net_inc - res.a_pol[idx];
                     continue;
                 }
                 
+                // Extrapolation
                 if (a_target >= a_endo[offset + na -1].val) {
                      Duald slope_c = (c_endo[offset+na-1] - c_endo[offset+na-2]) / (a_endo[offset+na-1] - a_endo[offset+na-2]);
                      res.c_pol[idx] = c_endo[offset+na-1] + slope_c * (a_target - a_endo[offset+na-1]);
-                     res.a_pol[idx] = (1.0 + r) * a_target + w * z - res.c_pol[idx];
+                     res.a_pol[idx] = a_target + net_inc - res.c_pol[idx];
                      continue;
                 }
                 
+                // Interpolation
                 while(p < na - 2 && a_target > a_endo[offset + p + 1].val) {
                     p++;
                 }
@@ -248,7 +255,7 @@ private:
                 Duald weight = (a_target - a_endo[offset + p]) / denom;
                 
                 res.c_pol[idx] = c_endo[offset + p] * (1.0 - weight) + c_endo[offset + p + 1] * weight;
-                res.a_pol[idx] = (1.0 + r) * a_target + w * z - res.c_pol[idx];
+                res.a_pol[idx] = a_target + net_inc - res.c_pol[idx];
             }
         }
         

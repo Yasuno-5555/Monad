@@ -5,6 +5,7 @@
 #include "UnifiedGrid.hpp"
 #include "DistributionAggregator.hpp"
 #include "Params.hpp"
+#include "kernel/TaxSystem.hpp"
 #include <vector>
 #include <iostream>
 #include <cmath>
@@ -26,8 +27,14 @@ public:
         double beta = m_params.get_required("beta");
         double sigma = m_params.get("sigma", 2.0);
         double alpha = m_params.get("alpha", 0.33);
-        double A = m_params.get("A", 1.0);
+        double A = m_params.get("alpha", 0.33);
         
+        // Tax System Setup
+        Monad::TaxSystem tax_sys;
+        tax_sys.lambda = m_params.get("tax_lambda", 1.0);
+        tax_sys.tau = m_params.get("tax_tau", 0.0); // Default 0 (Flat)
+        tax_sys.transfer = m_params.get("tax_transfer", 0.0);
+
         for(int iter=0; iter<max_iter; ++iter) {
             Duald r_dual(r, 1.0); 
             
@@ -36,12 +43,17 @@ public:
             Duald w_dual = (1.0 - alpha) * A * pow(K_dem, alpha);
             
             // 1. Initialize Expected Marginal Utility E[u'(c')]
-            // Guess c = r*a + w*z
+            // Guess c = r*a + NetLabor(w*z)
+            // Note: Since we use tax on labor, calculate net labor income.
+            
             std::vector<Duald> expected_mu(size);
             for(int j=0; j<nz; ++j) {
                 double z = m_params.income.z_grid[j];
+                Duald gross_lab = w_dual * z;
+                
                 for(int i=0; i<na; ++i) {
-                    Duald c = r_dual * grid.nodes[i] + w_dual * z;
+                    Duald gross = r_dual * grid.nodes[i] + gross_lab;
+                    Duald c = tax_sys.get_net_income(gross);
                     if (c.val < 1e-4) c = 1e-4; // Safe
                     expected_mu[j*na + i] = pow(c, -sigma);
                 }
@@ -72,6 +84,9 @@ public:
                 // B. Invert Euler & Budget
                 for(int j=0; j<nz; ++j) {
                     double z = m_params.income.z_grid[j];
+                    Duald gross_lab = w_dual * z;
+
+                    
                     for(int i=0; i<na; ++i) {
                         int idx = j*na + i;
                         Duald emu = EU[idx]; 
@@ -79,39 +94,47 @@ public:
                         Duald c = pow(rhs, -1.0/sigma);
                         
                         c_endo[idx] = c;
-                        // Budget: c + a' = (1+r)a + wz
-                        // a = (c + a' - wz) / (1+r)
+                        // Budget: c + a' = a + Net(r*a + w*z)
+                        // Solve for a: a = solve_asset_from_budget(c + a', r, w, z)
                         Duald a_prime = grid.nodes[i];
-                        a_endo[idx] = (c + a_prime - w_dual * z) / (1.0 + r_dual);
+                        Duald resources = c + a_prime;
+                        a_endo[idx] = tax_sys.solve_asset_from_budget(resources, r_dual, w_dual, z);
                     }
                 }
 
                 // C. Interpolation (for each z layer)
                 for(int j=0; j<nz; ++j) {
                     double z = m_params.income.z_grid[j];
-                    int offset = j * na;
+                    Duald gross_lab = w_dual * z;
+
                     
-                    // Slice for this z
-                    // Check monotonicity? (omitted for speed, critical)
+                    int offset = j * na;
                     
                     int p = 0; // Pointer for interpolation
                     for(int i=0; i<na; ++i) {
                         int idx = offset + i;
                         double a_target = grid.nodes[i];
-                        Duald a_min = a_endo[offset];
-                        Duald a_max = a_endo[offset + na - 1];
                         
                         // Borrowing Constraint / Boundary
-                        if (a_target <= a_min.val) {
+                        // Borrowing Constraint / Boundary
+                        if (a_target <= a_endo[offset].val) {
                              a_pol[idx] = grid.nodes[0]; // Binding constraint a' = a_min (0)
-                             c_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - a_pol[idx];
+                             // c = (1+r)a + Net(ra+wz) - a'
+                             // Here 'a' is current asset 'a_target'.
+                             Duald gross_y = r_dual * a_target + w_dual * z;
+                             Duald net_inc = tax_sys.get_net_income(gross_y);
+                             c_pol[idx] = a_target + net_inc - a_pol[idx];
                              continue;
                         }
-                        if (a_target >= a_max.val) {
+                        if (a_target >= a_endo[offset + na - 1].val) {
                              // Extrapolate slope from last segment
                              Duald slope_c = (c_endo[offset+na-1] - c_endo[offset+na-2]) / (a_endo[offset+na-1] - a_endo[offset+na-2]);
                              c_pol[idx] = c_endo[offset+na-1] + slope_c * (a_target - a_endo[offset+na-1]);
-                             a_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - c_pol[idx];
+                             // Recalculate a_pol using budget?
+                             // a_pol is a' (savings). c is known. a is known.
+                             Duald gross_y = r_dual * a_target + w_dual * z;
+                             Duald net_inc = tax_sys.get_net_income(gross_y);
+                             a_pol[idx] = a_target + net_inc - c_pol[idx];
                              continue;
                         }
 
@@ -124,7 +147,10 @@ public:
                         Duald weight = (a_target - a_endo[offset + p]) / denom;
                         
                         c_pol[idx] = c_endo[offset + p] * (1.0 - weight) + c_endo[offset + p + 1] * weight;
-                        a_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - c_pol[idx];
+                        // a_pol = a' = a + Net - c
+                        Duald gross_y = r_dual * a_target + w_dual * z;
+                        Duald net_inc = tax_sys.get_net_income(gross_y);
+                        a_pol[idx] = a_target + net_inc - c_pol[idx];
                     }
                 }
                 
@@ -205,11 +231,18 @@ public:
         double w = (1.0 - alpha) * A * std::pow(K_dem, alpha);
         
         // Initial Guess
+        // Tax System
+        Monad::TaxSystem tax_sys;
+        tax_sys.lambda = m_params.get("tax_lambda", 1.0);
+        tax_sys.tau = m_params.get("tax_tau", 0.0); 
+        tax_sys.transfer = m_params.get("tax_transfer", 0.0);
+
         std::vector<double> expected_mu(size);
         for(int j=0; j<nz; ++j) {
             double z = m_params.income.z_grid[j];
             for(int i=0; i<na; ++i) {
-                double c = r * grid.nodes[i] + w * z;
+                double gross = r * grid.nodes[i] + w * z;
+                double c = tax_sys.get_net_income(gross); // Initial guess: consumes all income
                 if(c < 1e-5) c = 1e-5;
                 expected_mu[j*na+i] = std::pow(c, -sigma);
             }
@@ -236,18 +269,24 @@ public:
              // Endogenous Grid
              for(int j=0; j<nz; ++j) {
                  double z = m_params.income.z_grid[j];
+
+                 
                  for(int i=0; i<na; ++i) {
                      int idx = j*na+i;
                      double rhs = beta * (1.0 + r) * EU[idx];
                      double c = std::pow(rhs, -1.0/sigma);
                      c_endo[idx] = c;
-                     a_endo[idx] = (c + grid.nodes[i] - w * z) / (1.0 + r);
+                     // Budget Inversion
+                     double a_prime = grid.nodes[i];
+                     double resources = c + a_prime;
+                     a_endo[idx] = tax_sys.solve_asset_from_budget(resources, r, w, z);
                  }
              }
              
              // Interpolation
              for(int j=0; j<nz; ++j) {
                  double z = m_params.income.z_grid[j];
+                 
                  int offset = j*na;
                  int p=0;
                  for(int i=0; i<na; ++i) {
@@ -256,19 +295,20 @@ public:
                      
                      if (a_target <= a_endo[offset]) {
                          a_pol[idx] = grid.nodes[0];
-                         c_pol[idx] = (1.0 + r)*a_target + w*z - a_pol[idx];
+                         c_pol[idx] = a_target + tax_sys.get_net_income(r*a_target + w*z) - a_pol[idx];
                          continue;
                      }
                      if (a_target >= a_endo[offset + na -1]) {
                          double slope = (c_endo[offset+na-1] - c_endo[offset+na-2])/(a_endo[offset+na-1] - a_endo[offset+na-2]);
                          c_pol[idx] = c_endo[offset+na-1] + slope*(a_target - a_endo[offset+na-1]);
-                         a_pol[idx] = (1.0 + r)*a_target + w*z - c_pol[idx];
+                         a_pol[idx] = a_target + tax_sys.get_net_income(r*a_target + w*z) - c_pol[idx];
                          continue;
                      }
                      while(p < na-2 && a_target > a_endo[offset + p + 1]) p++;
                      double wgt = (a_target - a_endo[offset+p])/(a_endo[offset+p+1] - a_endo[offset+p]);
+
                      c_pol[idx] = c_endo[offset+p]*(1.0-wgt) + c_endo[offset+p+1]*wgt;
-                     a_pol[idx] = (1.0 + r)*a_target + w*z - c_pol[idx];
+                     a_pol[idx] = a_target + tax_sys.get_net_income(r*a_target + w*z) - c_pol[idx];
                  }
              }
              

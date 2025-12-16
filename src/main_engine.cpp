@@ -35,15 +35,125 @@ void write_csv_ss(const std::string& filename, const UnifiedGrid& grid,
     std::cout << "[IO] Wrote " << filename << std::endl;
 }
 
-void write_csv_trans(const std::string& filename, const Eigen::VectorXd& dr, 
-                     const Eigen::VectorXd& dZ, int T) {
+void write_csv_trans(const std::string& filename, 
+                     const Monad::SsjSolver::TransitionResult& res, int T) {
     std::ofstream f(filename);
-    f << "period,dZ,dr\n";
+    // Export full macro variables
+    // dY = Output Gap, dC = Consumption, dN = Labor, dw = Real Wage
+    // dpi = Inflation, di = Nominal Rate, dreal_r = Real Rate
+    // dB = Debt, dT = Tax Revenue
+    f << "period,dY,dC,dN,dw,dpi,di,dreal_r,dB,dT\n";
     for(int t=0; t<T; ++t) {
-        double dz_val = (t < dZ.size()) ? dZ[t] : 0.0;
-        double dr_val = (t < dr.size()) ? dr[t] : 0.0;
-        f << t << "," << dz_val << "," << dr_val << "\n";
+        f << t << "," 
+          << res.dY(t) << "," << res.dC(t) << "," << res.dN(t) << ","
+          << res.dw(t) << "," << res.dpi(t) << "," << res.di(t) << ","
+          << res.dreal_r(t) << "," << res.dB(t) << "," << res.dT(t) << "\n";
     }
+    f.close();
+    std::cout << "[IO] Wrote " << filename << std::endl;
+}
+
+// Inequality Path Analysis
+// Computes consumption/asset distribution metrics along the transition path
+void write_inequality_path(const std::string& filename,
+                           const UnifiedGrid& grid,
+                           const Eigen::VectorXd& D_ss,
+                           const std::vector<double>& c_ss,
+                           const std::vector<double>& a_pol_ss,
+                           const Eigen::VectorXd& dr_path,
+                           const Monad::JacobianBuilder::PolicyPartials& partials,
+                           const IncomeProcess& income,
+                           double r_ss, double w_ss) {
+    std::ofstream f(filename);
+    f << "period,C_top10,C_bottom50,C_total,A_gini,wealth_top10_share\n";
+    
+    int na = grid.size;
+    int nz = income.n_z;
+    int size = na * nz;
+    int T = dr_path.size();
+    
+    // Precompute steady-state asset values for sorting
+    std::vector<std::pair<double, int>> asset_idx(size);
+    for(int j=0; j<nz; ++j) {
+        for(int i=0; i<na; ++i) {
+            int idx = j*na + i;
+            asset_idx[idx] = {grid.nodes[i], idx};
+        }
+    }
+    std::sort(asset_idx.begin(), asset_idx.end());
+    
+    // Find cutoff indices for bottom 50% and top 10%
+    double cum_mass = 0.0;
+    int bottom50_cutoff = 0;
+    int top10_cutoff = size - 1;
+    
+    for(int k=0; k<size; ++k) {
+        cum_mass += D_ss[asset_idx[k].second];
+        if(cum_mass < 0.50) bottom50_cutoff = k;
+        if(cum_mass < 0.90) top10_cutoff = k;
+    }
+    
+    // Compute metrics at each time step
+    for(int t=0; t<T; ++t) {
+        double dr_t = dr_path[t];
+        
+        // Linear approximation: dc_t = dc/dr * dr_t
+        // (Ignoring dw effects for simplicity - they're second order)
+        double C_bottom50 = 0.0;
+        double C_top10 = 0.0;
+        double C_total = 0.0;
+        double A_total = 0.0;
+        double A_top10 = 0.0;
+        
+        for(int k=0; k<size; ++k) {
+            int idx = asset_idx[k].second;
+            double mass = D_ss[idx];
+            
+            // Consumption at time t (linear approx)
+            double c_t = c_ss[idx] + partials.dc_dr[idx] * dr_t;
+            double a_t = grid.nodes[idx % na]; // Current assets
+            
+            C_total += c_t * mass;
+            A_total += a_t * mass;
+            
+            if(k <= bottom50_cutoff) {
+                C_bottom50 += c_t * mass;
+            }
+            if(k > top10_cutoff) {
+                C_top10 += c_t * mass;
+                A_top10 += a_t * mass;
+            }
+        }
+        
+        // Gini coefficient (simplified: using asset distribution)
+        // Gini = 1 - 2 * integral of Lorenz curve
+        double gini = 0.0;
+        double lorenz_area = 0.0;
+        double cum_pop = 0.0;
+        double cum_wealth = 0.0;
+        
+        for(int k=0; k<size; ++k) {
+            int idx = asset_idx[k].second;
+            double mass = D_ss[idx];
+            double a = grid.nodes[idx % na];
+            
+            double prev_cum_pop = cum_pop;
+            double prev_cum_wealth = cum_wealth;
+            
+            cum_pop += mass;
+            cum_wealth += a * mass / A_total;
+            
+            // Trapezoidal area under Lorenz curve
+            lorenz_area += 0.5 * (prev_cum_wealth + cum_wealth) * mass;
+        }
+        gini = 1.0 - 2.0 * lorenz_area;
+        
+        double top10_share = A_top10 / A_total;
+        
+        f << t << "," << C_top10 << "," << C_bottom50 << "," << C_total 
+          << "," << gini << "," << top10_share << "\n";
+    }
+    
     f.close();
     std::cout << "[IO] Wrote " << filename << std::endl;
 }
@@ -118,34 +228,34 @@ int main(int argc, char* argv[]) {
         std::cout << "[SSJ] Partial da/dr norm: " << partials.da_dr.norm() << std::endl;
         std::cout << "[SSJ] Partial da/dw norm: " << partials.da_dw.norm() << std::endl;
         
-        // 4. SSJ is ready for Python
-        // TODO: Serialize Partials and Lambda for higher-level use
         std::cout << "[INFO] SSJ Framework (Lambda and Partials) built successfully." << std::endl;
  
         // 4. Check for Shocks & Solve Transition
         bool run_shock = true; 
         
         if (run_shock) {
-            std::cout << "\n--- Step 3: Solving Transition Path (SSJ) ---" << std::endl;
+            std::cout << "\n--- Step 3: Solving NK Transition Path (SSJ) ---" << std::endl;
             int T = 200;
             
-            // Define Shock dZ (e.g., 1% TFP shock AR(1))
-            // We interpret dZ as the exogenous shift in Capital Demand
-            Eigen::VectorXd dZ = Eigen::VectorXd::Zero(T);
-            double rho = 0.9;
-            double shock_size = 0.01; 
+            // NK Solution: Output Gap Response to Monetary Policy Shock
+            // Assumption: c_ss captured from get_steady_state_policy as c_ss
             
-            for(int t=0; t<T; ++t) {
-                 dZ[t] = shock_size * std::pow(rho, t); 
-            }
-
-            // Solve Linear System
-            Eigen::VectorXd dr_path = Monad::SsjSolver::solve_linear_transition(
-                T, grid, D_ss, Lambda_ss, a_pol_ss, partials, dZ, params.income
+            // v1.7: Check for wage stickiness and Taylor Rule tuning
+            double theta_w = params.get("theta_w", 0.75); // Default to Sticky (v1.7)
+            double phi_pi = params.get("phi_pi", 1.5);    // Default Taylor Rule
+            
+            // Solve Linear System (using NK+Wage solver)
+            auto res = Monad::SsjSolver::solve_nk_wage_transition(
+                T, grid, D_ss, Lambda_ss, a_pol_ss, c_ss, partials, params.income, r_ss, theta_w, phi_pi
             );
             
-            // Output Results
-            write_csv_trans("transition.csv", dr_path, dZ, T);
+            // Output Results (Full Macro Paths)
+            write_csv_trans("transition_nk.csv", res, T);
+            
+            // Phase 3: Inequality Analysis
+            std::cout << "\n--- Step 4: Computing Inequality Path ---" << std::endl;
+            write_inequality_path("inequality_path.csv", grid, D_ss, c_ss, a_pol_ss,
+                                  res.dY, partials, params.income, r_ss, w_ss);
         }
 
         std::cout << "\n=== Finished Successfully ===" << std::endl;

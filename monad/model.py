@@ -38,6 +38,29 @@ class MonadModel:
         self.risk_params["rho"] = rho
         self.risk_params["sigma_eps"] = sigma_eps
         self.risk_params["n_z"] = n_z
+    
+    def set_fiscal(self, lambda_=1.0, tau=0.0, transfer=0.0):
+        self.params["tax_lambda"] = lambda_
+        self.params["tax_tau"] = tau
+        self.params["tax_transfer"] = transfer
+    
+    def set_unemployment(self, u_rate: float = 0.05, replacement_rate: float = 0.4):
+        """
+        Enable unemployment risk in the income process.
+        
+        Parameters:
+        -----------
+        u_rate : float
+            Steady-state unemployment rate (default 5%)
+        replacement_rate : float
+            Unemployment benefit as fraction of mean wage (default 40%)
+        """
+        self.risk_params["unemployment"] = True
+        self.risk_params["u_rate"] = u_rate
+        self.risk_params["replacement_rate"] = replacement_rate
+        
+        # Also store in params for C++ to access
+        self.params["unemployment_benefit"] = replacement_rate
 
     def define_grid(self, size=500, type="Log-spaced", max_asset=100.0):
         self.grid_config["n_points"] = size
@@ -45,12 +68,25 @@ class MonadModel:
         self.grid_config["max"] = max_asset
 
     def solve(self, exe_path="MonadEngine"):
-        # 1. Generate Income Process (if applicable)
+        # 1. Generate Income Process
         rho = self.risk_params["rho"]
         sigma_eps = self.risk_params["sigma_eps"]
         n_z = self.risk_params["n_z"]
+        use_unemployment = self.risk_params.get("unemployment", False)
 
-        if sigma_eps > 0.0 and n_z > 1:
+        if use_unemployment and sigma_eps > 0.0 and n_z > 1:
+            # v1.7: Labor process with unemployment
+            from monad.process import build_labor_process
+            u_rate = self.risk_params.get("u_rate", 0.05)
+            replacement_rate = self.risk_params.get("replacement_rate", 0.4)
+            
+            z_grid, Pi, is_unemployed = build_labor_process(
+                rho, sigma_eps, n_z, u_rate, replacement_rate
+            )
+            n_z = len(z_grid)  # Now includes unemployment state
+            
+        elif sigma_eps > 0.0 and n_z > 1:
+            # Standard Rouwenhorst (no unemployment)
             z_grid, Pi = rouwenhorst(rho, sigma_eps, n_z)
         else:
             # Deterministic / Representative Agent Fallback
@@ -121,8 +157,17 @@ class MonadModel:
             results["steady_state"] = pd.read_csv("steady_state.csv")
             print("Loaded steady_state.csv")
             
-        if os.path.exists("transition.csv"):
+        # v1.7: Prioritize NK transition file
+        if os.path.exists("transition_nk.csv"):
+            results["transition"] = pd.read_csv("transition_nk.csv")
+            print("Loaded transition_nk.csv")
+        elif os.path.exists("transition.csv"):
             results["transition"] = pd.read_csv("transition.csv")
             print("Loaded transition.csv")
+            
+        # v1.8: Load inequality path
+        if os.path.exists("inequality_path.csv"):
+            results["inequality"] = pd.read_csv("inequality_path.csv")
+            print("Loaded inequality_path.csv")
             
         return results

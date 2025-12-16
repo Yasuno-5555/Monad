@@ -80,6 +80,12 @@ public:
                  params.income.Pi_flat = {1.0};
             }
             std::cout << "[Monad::IO] Loaded Income Process (Nz=" << params.income.n_z << ")" << std::endl;
+            
+            // v1.7: Load unemployment benefit if present
+            if (data.contains("parameters") && data["parameters"].contains("unemployment_benefit")) {
+                params.income.unemployment_benefit = data["parameters"]["unemployment_benefit"].get<double>();
+                std::cout << "[Monad::IO] Unemployment Benefit: " << params.income.unemployment_benefit << std::endl;
+            }
         } else {
             // Default to deterministic
             params.income.n_z = 1;
