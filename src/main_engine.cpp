@@ -17,11 +17,19 @@
 // Simple CSV Writer Helpers
 void write_csv_ss(const std::string& filename, const UnifiedGrid& grid, 
                   const std::vector<double>& c, const std::vector<double>& a_pol, 
-                  const Eigen::VectorXd& D) {
+                  const Eigen::VectorXd& D, int nz) {
     std::ofstream f(filename);
-    f << "asset,consumption,next_asset,distribution\n";
-    for(int i=0; i<grid.size; ++i) {
-        f << grid.nodes[i] << "," << c[i] << "," << a_pol[i] << "," << D[i] << "\n";
+    f << "asset,z_idx,consumption,next_asset,distribution\n";
+    int na = grid.size;
+    
+    // c, a_pol, D are flattened (nz * na)
+    for(int j=0; j<nz; ++j) {
+        for(int i=0; i<na; ++i) {
+            int idx = j * na + i;
+            if (idx < c.size()) {
+                f << grid.nodes[i] << "," << j << "," << c[idx] << "," << a_pol[idx] << "," << D[idx] << "\n";
+            }
+        }
     }
     f.close();
     std::cout << "[IO] Wrote " << filename << std::endl;
@@ -79,35 +87,41 @@ int main(int argc, char* argv[]) {
 
         // Retrieve Full Steady State Policy & Distribution
         // NOTE: Implemented helper in AnalyticalSolver to retrieve these after convergence
-        std::vector<double> c_ss, mu_ss, a_pol_ss;
-        AnalyticalSolver::get_steady_state_policy(grid, r_ss, params, c_ss, mu_ss, a_pol_ss);
+        std::vector<double> c_ss, mu_ss, a_pol_ss, D_ss_vec;
+        AnalyticalSolver::get_steady_state_policy(grid, r_ss, params, c_ss, mu_ss, a_pol_ss, D_ss_vec);
 
-        // Build Steady State Transition Matrix and Distribution properly
-        auto Lambda_ss = Monad::JacobianBuilder::build_transition_matrix(a_pol_ss, grid);
-        
-        // Solve for invariant distribution D_ss
-        Eigen::VectorXd D_ss(grid.size);
-        std::vector<double> D_std(grid.size, 1.0/grid.size);
-        for(int t=0; t<5000; ++t) {
-            Eigen::VectorXd D_curr = Eigen::Map<Eigen::VectorXd>(D_std.data(), grid.size);
-            Eigen::VectorXd D_next = Lambda_ss.transpose() * D_curr;
-            double diff = (D_next - D_curr).cwiseAbs().sum();
-            std::copy(D_next.data(), D_next.data() + grid.size, D_std.begin());
-            if(diff < 1e-11) break;
-        }
-        D_ss = Eigen::Map<Eigen::VectorXd>(D_std.data(), grid.size);
+        // Convert D_ss_vec to Eigen for compatibility (though we really use the vec for CSV now)
+        // Since D_ss is used in CSV writer which I updated to take Eigen::VectorXd, I'll map it.
+        // Wait, write_csv_ss takes Eigen::VectorXd& D.
+        Eigen::VectorXd D_ss = Eigen::Map<Eigen::VectorXd>(D_ss_vec.data(), D_ss_vec.size());
 
         // Output Steady State
-        write_csv_ss("steady_state.csv", grid, c_ss, a_pol_ss, D_ss);
+        write_csv_ss("steady_state.csv", grid, c_ss, a_pol_ss, D_ss, params.income.n_z);
 
-        
         // 3. Prepare for SSJ (Partials)
-        std::cout << "\n--- Step 2: Building Jacobian Partials ---" << std::endl;
+        // Enable SSJ for 2D
+        std::cout << "\n--- Step 2: Building 2D Transition Matrix (SSJ) ---" << std::endl;
         
-        auto partials = Monad::JacobianBuilder::compute_partials(
+        // Build 2D Transition Matrix
+        auto Lambda_ss = Monad::JacobianBuilder::build_transition_matrix_2d(a_pol_ss, grid, params.income);
+        
+        // Check stationarity: Lambda^T * D_ss should be D_ss
+        Eigen::VectorXd D_check = Lambda_ss.transpose() * D_ss;
+        double err = (D_check - D_ss).norm();
+        std::cout << "[SSJ] Stationarity Check Error: " << err << std::endl;
+
+        std::cout << "\n--- Step 3: Computing 2D Partials (Jacobian) ---" << std::endl;
+        auto partials = Monad::JacobianBuilder::compute_partials_2d(
             grid, params, mu_ss, r_ss, w_ss
         );
         
+        std::cout << "[SSJ] Partial da/dr norm: " << partials.da_dr.norm() << std::endl;
+        std::cout << "[SSJ] Partial da/dw norm: " << partials.da_dw.norm() << std::endl;
+        
+        // 4. SSJ is ready for Python
+        // TODO: Serialize Partials and Lambda for higher-level use
+        std::cout << "[INFO] SSJ Framework (Lambda and Partials) built successfully." << std::endl;
+ 
         // 4. Check for Shocks & Solve Transition
         bool run_shock = true; 
         
@@ -127,7 +141,7 @@ int main(int argc, char* argv[]) {
 
             // Solve Linear System
             Eigen::VectorXd dr_path = Monad::SsjSolver::solve_linear_transition(
-                T, grid, D_ss, Lambda_ss, a_pol_ss, partials, dZ
+                T, grid, D_ss, Lambda_ss, a_pol_ss, partials, dZ, params.income
             );
             
             // Output Results

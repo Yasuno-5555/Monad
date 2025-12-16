@@ -21,7 +21,8 @@ public:
         const Eigen::SparseMatrix<double>& Lambda_ss,
         const std::vector<double>& a_ss,
         const JacobianBuilder::PolicyPartials& partials,
-        const Vec& dZ // Exogenous shock vector (e.g., shift in labor demand)
+        const Vec& dZ, // Exogenous shock vector
+        const IncomeProcess& income
     ) {
         std::cout << "[Monad::SSJ] Building General Equilibrium Jacobian..." << std::endl;
 
@@ -33,7 +34,7 @@ public:
         // Get the "base" impulse response (column 0)
         // Note: build_asset_impulse_response returns dK vector
         Vec irf_K = JacobianAggregator::build_asset_impulse_response(
-            T, grid, D_ss, Lambda_ss, a_ss, partials.da_dr
+            T, grid, D_ss, Lambda_ss, a_ss, partials.da_dr, income
         );
 
         Mat J_ha = Mat::Zero(T, T);

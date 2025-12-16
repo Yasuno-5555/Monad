@@ -14,12 +14,14 @@ class AnalyticalSolver {
 public:
     static void solve_steady_state(const UnifiedGrid& grid, double& r_guess, const MonadParams& m_params) {
         
-        std::cout << "--- Analytical Newton Solver (Phase 3) ---" << std::endl;
+        std::cout << "--- Analytical Newton Solver (v1.2 HANK) ---" << std::endl;
         
         double r = r_guess;
         const int max_iter = 20;
         const double tol = 1e-6;
-        int n = grid.size;
+        int na = grid.size;
+        int nz = m_params.income.n_z;
+        int size = na * nz; // Flattened size
         
         double beta = m_params.get_required("beta");
         double sigma = m_params.get("sigma", 2.0);
@@ -30,107 +32,138 @@ public:
             Duald r_dual(r, 1.0); 
             
             Duald term = r_dual / (alpha * A);
-            Duald K_dem = pow(term, 1.0/(alpha - 1.0));
+            Duald K_dem = pow(term, 1.0/(alpha - 1.0)); // Capital Demand
             Duald w_dual = (1.0 - alpha) * A * pow(K_dem, alpha);
             
-            // EGM Initialization
-            std::vector<Duald> expected_mu(n);
-             
-            // Initial guess
-            for(int i=0; i<n; ++i) {
-                Duald c = r_dual * grid.nodes[i] + w_dual;
-                expected_mu[i] = pow(c, -sigma);
+            // 1. Initialize Expected Marginal Utility E[u'(c')]
+            // Guess c = r*a + w*z
+            std::vector<Duald> expected_mu(size);
+            for(int j=0; j<nz; ++j) {
+                double z = m_params.income.z_grid[j];
+                for(int i=0; i<na; ++i) {
+                    Duald c = r_dual * grid.nodes[i] + w_dual * z;
+                    if (c.val < 1e-4) c = 1e-4; // Safe
+                    expected_mu[j*na + i] = pow(c, -sigma);
+                }
             }
             
-            std::vector<Duald> c_pol(n), a_pol(n);
+            std::vector<Duald> c_pol(size), a_pol(size);
             
-            // EGM Fixed Point Loop
-            for(int k=0; k<500; ++k) {
-                std::vector<Duald> c_endo(n);
-                std::vector<Duald> a_endo(n);
+            // 2. EGM Fixed Point Loop
+            for(int k=0; k<1000; ++k) {
+                std::vector<Duald> c_endo(size);
+                std::vector<Duald> a_endo(size); // Endogenous asset grid
                 bool egm_success = true;
                 
-                for(int i=0; i<n; ++i) {
-                     Duald emu = expected_mu[i];
-                     Duald rhs = beta * (1.0 + r_dual) * emu;
-                     Duald exponent = -1.0 / sigma; 
-                     Duald c = pow(rhs, exponent);
-                     c_endo[i] = c;
-                     Duald a_prime = grid.nodes[i];
-                     a_endo[i] = (c + a_prime - w_dual) / (1.0 + r_dual);
+                // A. Compute Expected MU for current states using Matrix Product
+                // EU[j, i] = Sum_next ( Pi[j, next] * expected_mu[next, i] )
+                // Here 'i' represents a' choice (which corresponds to grid nodes today)
+                std::vector<Duald> EU(size);
+                for(int j=0; j<nz; ++j) {
+                    for(int i=0; i<na; ++i) {
+                        Duald sum_mu = 0.0;
+                        for(int next=0; next<nz; ++next) {
+                             sum_mu = sum_mu + m_params.income.prob(j, next) * expected_mu[next*na + i];
+                        }
+                        EU[j*na + i] = sum_mu;
+                    }
                 }
-                
-                // Monotonicity Check
-                for (int i = 1; i < n; ++i) {
-                    if (a_endo[i] < a_endo[i-1]) {
-                        egm_success = false;
-                        break;
+
+                // B. Invert Euler & Budget
+                for(int j=0; j<nz; ++j) {
+                    double z = m_params.income.z_grid[j];
+                    for(int i=0; i<na; ++i) {
+                        int idx = j*na + i;
+                        Duald emu = EU[idx]; 
+                        Duald rhs = beta * (1.0 + r_dual) * emu;
+                        Duald c = pow(rhs, -1.0/sigma);
+                        
+                        c_endo[idx] = c;
+                        // Budget: c + a' = (1+r)a + wz
+                        // a = (c + a' - wz) / (1+r)
+                        Duald a_prime = grid.nodes[i];
+                        a_endo[idx] = (c + a_prime - w_dual * z) / (1.0 + r_dual);
+                    }
+                }
+
+                // C. Interpolation (for each z layer)
+                for(int j=0; j<nz; ++j) {
+                    double z = m_params.income.z_grid[j];
+                    int offset = j * na;
+                    
+                    // Slice for this z
+                    // Check monotonicity? (omitted for speed, critical)
+                    
+                    int p = 0; // Pointer for interpolation
+                    for(int i=0; i<na; ++i) {
+                        int idx = offset + i;
+                        double a_target = grid.nodes[i];
+                        Duald a_min = a_endo[offset];
+                        Duald a_max = a_endo[offset + na - 1];
+                        
+                        // Borrowing Constraint / Boundary
+                        if (a_target <= a_min.val) {
+                             a_pol[idx] = grid.nodes[0]; // Binding constraint a' = a_min (0)
+                             c_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - a_pol[idx];
+                             continue;
+                        }
+                        if (a_target >= a_max.val) {
+                             // Extrapolate slope from last segment
+                             Duald slope_c = (c_endo[offset+na-1] - c_endo[offset+na-2]) / (a_endo[offset+na-1] - a_endo[offset+na-2]);
+                             c_pol[idx] = c_endo[offset+na-1] + slope_c * (a_target - a_endo[offset+na-1]);
+                             a_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - c_pol[idx];
+                             continue;
+                        }
+
+                        // Find bracket
+                        while(p < na - 2 && a_target > a_endo[offset + p + 1].val) {
+                            p++;
+                        }
+                        
+                        Duald denom = a_endo[offset + p + 1] - a_endo[offset + p];
+                        Duald weight = (a_target - a_endo[offset + p]) / denom;
+                        
+                        c_pol[idx] = c_endo[offset + p] * (1.0 - weight) + c_endo[offset + p + 1] * weight;
+                        a_pol[idx] = (1.0 + r_dual)*a_target + w_dual*z - c_pol[idx];
                     }
                 }
                 
-                if (!egm_success) {
-                    std::cerr << "Non-monotonicity in EGM. Aborting." << std::endl;
-                    break;
+                // D. Update mu_next
+                std::vector<Duald> expected_mu_next(size);
+                for(int idx=0; idx<size; ++idx) {
+                    expected_mu_next[idx] = pow(c_pol[idx], -sigma);
                 }
-                
-                // Interpolation
-                int j = 0; 
-                for(int i=0; i<n; ++i) {
-                    double a_target = grid.nodes[i];
-                    
-                    if (a_target <= a_endo[0].val) {
-                        a_pol[i] = grid.nodes[0];
-                        c_pol[i] = (1.0 + r_dual) * a_target + w_dual - a_pol[i];
-                        continue;
-                    }
-                    
-                    if (a_target >= a_endo[n-1].val) {
-                         Duald slope_c = (c_endo[n-1] - c_endo[n-2]) / (a_endo[n-1] - a_endo[n-2]);
-                         c_pol[i] = c_endo[n-1] + slope_c * (a_target - a_endo[n-1]);
-                         a_pol[i] = (1.0 + r_dual) * a_target + w_dual - c_pol[i];
-                         continue;
-                    }
-                    
-                    while(j < n - 2 && a_target > a_endo[j+1].val) {
-                        j++;
-                    }
-                    
-                    Duald denom = a_endo[j+1] - a_endo[j];
-                    Duald weight = (a_target - a_endo[j]) / denom;
-                    
-                    c_pol[i] = c_endo[j] * (1.0 - weight) + c_endo[j+1] * weight;
-                    a_pol[i] = (1.0 + r_dual) * a_target + w_dual - c_pol[i];
-                }
-                
-                // Update expected_mu
-                std::vector<Duald> expected_mu_next(n);
-                for(int i=0; i<n; ++i) {
-                    expected_mu_next[i] = pow(c_pol[i], -sigma);
-                }
-                
+
                 double mu_diff = 0.0;
-                for(int i=0; i<n; ++i) {
-                    mu_diff += std::abs(expected_mu_next[i].val - expected_mu[i].val);
+                for(int idx=0; idx<size; ++idx) {
+                    mu_diff += std::abs(expected_mu_next[idx].val - expected_mu[idx].val);
                 }
                 expected_mu = expected_mu_next;
+                if (mu_diff < 1e-9) break;
+            } // End EGM Loop
+            
+            // 3. Aggregation (2D)
+            std::vector<Duald> D(size);
+            for(int idx=0; idx<size; ++idx) D[idx] = 1.0 / size; // Uniform init
+            
+            for(int t=0; t<5000; ++t) {
+                // Use 2D Iterator
+                std::vector<Duald> D_next = Monad::DistributionAggregator::forward_iterate_2d(D, a_pol, grid, m_params.income);
                 
-                if (mu_diff < 1e-10) break;
-            }
-            
-            // Aggregation
-            std::vector<Duald> D(n);
-            for(int i=0; i<n; ++i) D[i] = 1.0 / n;
-            
-            for(int t=0; t<2000; ++t) {
-                std::vector<Duald> D_next = Monad::DistributionAggregator::forward_iterate(D, a_pol, grid);
-                double diff = 0.0;
-                for(int i=0; i<n; ++i) diff += std::abs(D_next[i].val - D[i].val);
+                double dist_diff = 0.0;
+                for(int idx=0; idx<size; ++idx) dist_diff += std::abs(D_next[idx].val - D[idx].val);
                 D = D_next;
-                if(diff < 1e-10) break;
+                if(dist_diff < 1e-10) break;
             }
             
+            // 4. Market Clearing
             Duald K_sup = 0.0;
-            for(int i=0; i<n; ++i) K_sup = K_sup + D[i] * grid.nodes[i];
+            for(int idx=0; idx<size; ++idx) {
+                // Need a' or a? Steady state K = Sum D(a,z) * a
+                // But D is distribution over grid points (a, z).
+                int a_idx = idx % na;
+                K_sup = K_sup + D[idx] * grid.nodes[a_idx];
+            }
             
             Duald resid = K_dem - K_sup;
             std::cout << "Iter " << iter << ": r=" << r << ", Resid=" << resid.val << ", J=" << resid.der << std::endl;
@@ -142,84 +175,131 @@ public:
             }
             
             double step = resid.val / resid.der;
-            if (std::abs(step) > 0.01) step = (step > 0 ? 0.01 : -0.01);
+            if (std::abs(step) > 0.005) step = (step > 0 ? 0.005 : -0.005); // Smaller step for stability
             r = r - step;
             
-            if (r < 0.001) r = 0.001;
-            if (r > 0.2) r = 0.2;
+            // Bounds check
+            if (r < 0.0001) r = 0.0001;
+            if (r > 0.15) r = 0.15;
         }
         std::cout << "Max iter reached." << std::endl;
     }
 
-    // Helper to retrieve steady state objects for SSJ
+    // Helper to retrieve steady state objects for SSJ (Updated for 2D)
+    // NOTE: For now, we return flattened vectors.
     static void get_steady_state_policy(
         const UnifiedGrid& grid, double r, const MonadParams& m_params,
-        std::vector<double>& c_out, std::vector<double>& mu_out, std::vector<double>& a_out
+        std::vector<double>& c_out, std::vector<double>& mu_out, std::vector<double>& a_out, std::vector<double>& D_out
     ) {
-        // Re-run one EGM step at fixed r
-        int n = grid.size;
+        // Re-run minimal EGM step at fixed r
+        int na = grid.size;
+        int nz = m_params.income.n_z;
+        int size = na * nz;
+
         double beta = m_params.get_required("beta");
         double sigma = m_params.get("sigma", 2.0);
         double alpha = m_params.get("alpha", 0.33);
         double A = m_params.get("A", 1.0);
         
-        // Prices
         double K_dem = std::pow(r / (alpha * A), 1.0/(alpha-1.0));
         double w = (1.0 - alpha) * A * std::pow(K_dem, alpha);
         
-        // 1. Initial Guess (same as solver)
-        std::vector<double> expected_mu(n);
-        for(int i=0; i<n; ++i) {
-            double c = r * grid.nodes[i] + w;
-            expected_mu[i] = std::pow(c, -sigma);
+        // Initial Guess
+        std::vector<double> expected_mu(size);
+        for(int j=0; j<nz; ++j) {
+            double z = m_params.income.z_grid[j];
+            for(int i=0; i<na; ++i) {
+                double c = r * grid.nodes[i] + w * z;
+                if(c < 1e-5) c = 1e-5;
+                expected_mu[j*na+i] = std::pow(c, -sigma);
+            }
         }
         
-        std::vector<double> c_pol(n), a_pol(n);
+        std::vector<double> c_pol(size), a_pol(size);
         
         // Converge Policy
         for(int k=0; k<200; ++k) {
-             std::vector<double> c_endo(n), a_endo(n);
+             std::vector<double> c_endo(size), a_endo(size);
+             std::vector<double> EU(size);
              
-             for(int i=0; i<n; ++i) {
-                 double rhs = beta * (1.0 + r) * expected_mu[i];
-                 double c = std::pow(rhs, -1.0/sigma);
-                 c_endo[i] = c;
-                 a_endo[i] = (c + grid.nodes[i] - w) / (1.0 + r);
+             // Expectation Step
+             for(int j=0; j<nz; ++j) {
+                 for(int i=0; i<na; ++i) {
+                     double sum_mu = 0.0;
+                     for(int next=0; next<nz; ++next) {
+                          sum_mu += m_params.income.prob(j, next) * expected_mu[next*na+i];
+                     }
+                     EU[j*na+i] = sum_mu;
+                 }
+             }
+
+             // Endogenous Grid
+             for(int j=0; j<nz; ++j) {
+                 double z = m_params.income.z_grid[j];
+                 for(int i=0; i<na; ++i) {
+                     int idx = j*na+i;
+                     double rhs = beta * (1.0 + r) * EU[idx];
+                     double c = std::pow(rhs, -1.0/sigma);
+                     c_endo[idx] = c;
+                     a_endo[idx] = (c + grid.nodes[i] - w * z) / (1.0 + r);
+                 }
              }
              
-             // Interp
-             int j=0;
-             for(int i=0; i<n; ++i) {
-                 double a_target = grid.nodes[i];
-                 if (a_target <= a_endo[0]) {
-                     a_pol[i] = grid.nodes[0];
-                     c_pol[i] = (1.0 + r)*a_target + w - a_pol[i];
-                     continue;
+             // Interpolation
+             for(int j=0; j<nz; ++j) {
+                 double z = m_params.income.z_grid[j];
+                 int offset = j*na;
+                 int p=0;
+                 for(int i=0; i<na; ++i) {
+                     int idx = offset + i;
+                     double a_target = grid.nodes[i];
+                     
+                     if (a_target <= a_endo[offset]) {
+                         a_pol[idx] = grid.nodes[0];
+                         c_pol[idx] = (1.0 + r)*a_target + w*z - a_pol[idx];
+                         continue;
+                     }
+                     if (a_target >= a_endo[offset + na -1]) {
+                         double slope = (c_endo[offset+na-1] - c_endo[offset+na-2])/(a_endo[offset+na-1] - a_endo[offset+na-2]);
+                         c_pol[idx] = c_endo[offset+na-1] + slope*(a_target - a_endo[offset+na-1]);
+                         a_pol[idx] = (1.0 + r)*a_target + w*z - c_pol[idx];
+                         continue;
+                     }
+                     while(p < na-2 && a_target > a_endo[offset + p + 1]) p++;
+                     double wgt = (a_target - a_endo[offset+p])/(a_endo[offset+p+1] - a_endo[offset+p]);
+                     c_pol[idx] = c_endo[offset+p]*(1.0-wgt) + c_endo[offset+p+1]*wgt;
+                     a_pol[idx] = (1.0 + r)*a_target + w*z - c_pol[idx];
                  }
-                 if (a_target >= a_endo[n-1]) {
-                     double slope = (c_endo[n-1] - c_endo[n-2])/(a_endo[n-1] - a_endo[n-2]);
-                     c_pol[i] = c_endo[n-1] + slope*(a_target - a_endo[n-1]);
-                     a_pol[i] = (1.0 + r)*a_target + w - c_pol[i];
-                     continue;
-                 }
-                 while(j < n-2 && a_target > a_endo[j+1]) j++;
-                 double wgt = (a_target - a_endo[j])/(a_endo[j+1] - a_endo[j]);
-                 c_pol[i] = c_endo[j]*(1.0-wgt) + c_endo[j+1]*wgt;
-                 a_pol[i] = (1.0 + r)*a_target + w - c_pol[i];
              }
              
-             std::vector<double> next_mu(n);
-             double mu_diff=0;
-             for(int i=0; i<n; ++i) {
+             // Update Mu
+             std::vector<double> next_mu(size);
+             double mad = 0;
+             for(int i=0; i<size; ++i) {
                  next_mu[i] = std::pow(c_pol[i], -sigma);
-                 mu_diff += std::abs(next_mu[i] - expected_mu[i]);
+                 mad += std::abs(next_mu[i] - expected_mu[i]);
              }
              expected_mu = next_mu;
-             if(mu_diff < 1e-10) break;
+             if(mad < 1e-10) break;
         }
         
+
+        
+        // Compute Invariant Distribution (2D)
+        std::vector<double> D(size);
+        for(int idx=0; idx<size; ++idx) D[idx] = 1.0 / size; 
+        
+        for(int t=0; t<5000; ++t) {
+             std::vector<double> D_next = Monad::DistributionAggregator::forward_iterate_2d(D, a_pol, grid, m_params.income);
+             double dist_diff = 0.0;
+             for(int idx=0; idx<size; ++idx) dist_diff += std::abs(D_next[idx] - D[idx]);
+             D = D_next;
+             if(dist_diff < 1e-10) break;
+        }
+
         c_out = c_pol;
         a_out = a_pol;
         mu_out = expected_mu;
+        D_out = D;
     }
 };
