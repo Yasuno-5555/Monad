@@ -1,6 +1,6 @@
 ^C:\USERS\KOUNO\DESKTOP\PROJECTS\MONAD\BUILD_PHASE3\CMAKEFILES\00A78FBA15FEA9357AF10EC828B9D481\GENERATE.STAMP.RULE
 setlocal
-"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/kouno/Desktop/Projects/Monad -BC:/Users/kouno/Desktop/Projects/Monad/build_phase3 --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/kouno/Desktop/Projects/Monad/build_phase3/MonadEngine.sln
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/kouno/Desktop/Projects/Monad -BC:/Users/kouno/Desktop/Projects/Monad/build_phase3 --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/kouno/Desktop/Projects/Monad/build_phase3/MonadTwoAssetCUDA.sln
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone

@@ -811,11 +811,13 @@ void launch_dist_forward(CudaBackend& backend, double* d_dD, double* d_dD_next) 
     );
 }
 
-// Full IRF Computation on GPU
-std::vector<double> compute_irf_gpu(CudaBackend& backend, int T) {
+// Full IRF Computation on GPU - v3.3 Extended with dB
+IRFResult compute_irf_gpu(CudaBackend& backend, int T) {
     int total = backend.N_m * backend.N_a * backend.N_z;
     
-    std::vector<double> irf(T);
+    IRFResult result;
+    result.dC.resize(T);
+    result.dB.resize(T);
     
     // Allocate temp buffer for forward iteration
     double* d_dD_temp;
@@ -827,10 +829,13 @@ std::vector<double> compute_irf_gpu(CudaBackend& backend, int T) {
     for (int t = 0; t < T; ++t) {
         // Compute dC_t = sum_i dD_t[i] * c[i]
         double dC_t = gpu_weighted_sum(backend.d_F, backend.d_c_pol, total);
-        irf[t] = dC_t;
+        result.dC[t] = dC_t;
+        
+        // v3.3: Compute dB_t = sum_i dD_t[i] * m_pol[i] (liquid asset response)
+        double dB_t = gpu_weighted_sum(backend.d_F, backend.d_m_pol, total);
+        result.dB[t] = dB_t;
         
         // Forward iterate: dD_{t+1} = Lambda^T * dD_t
-        // For now, we use dF directly in d_F buffer and iterate
         if (t < T - 1) {
             launch_dist_forward(backend, backend.d_F, d_dD_temp);
             cudaMemcpy(backend.d_F, d_dD_temp, total * sizeof(double), cudaMemcpyDeviceToDevice);
@@ -839,7 +844,7 @@ std::vector<double> compute_irf_gpu(CudaBackend& backend, int T) {
     
     cudaFree(d_dD_temp);
     
-    return irf;
+    return result;
 }
 
 } // namespace Monad (Re-opened)

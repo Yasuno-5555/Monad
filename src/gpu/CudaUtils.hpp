@@ -170,6 +170,12 @@ private:
     }
 };
 
+// v3.3: IRF Result with both dC and dB
+struct IRFResult {
+    std::vector<double> dC;  // dC/dr_m at each t
+    std::vector<double> dB;  // dB/dr_m at each t (for asset market clearing)
+};
+
 // Kernel Wrappers
 void launch_bellman_kernel(CudaBackend& backend, const std::vector<double>& params);
 void launch_expectations(CudaBackend& backend, double r_m, double sigma);
@@ -177,6 +183,8 @@ void launch_bellman_dual(CudaBackend& backend, double r_m_val, double r_a_val,
                         double seed_rm, double seed_ra,
                         double* d_out_c_der, double* d_out_m_der, double* d_out_a_der);
 void launch_fake_news(CudaBackend& backend, const double* d_D, double* d_F);
-std::vector<double> compute_irf_gpu(CudaBackend& backend, int T);
+IRFResult compute_irf_gpu(CudaBackend& backend, int T);
+double gpu_weighted_sum(const double* d_a, const double* d_b, int n);
+void launch_dist_forward(CudaBackend& backend, double* d_dD, double* d_dD_next);
 
 } // namespace Monad

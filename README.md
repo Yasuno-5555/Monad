@@ -1,12 +1,15 @@
-# Monad Engine v2.0
+# Monad Engine v3.3
 
-**A High-Performance Heterogeneous Agent New Keynesian (HANK) Model Solver**
+**Fastest Open-Source GPU-Accelerated Two-Asset HANK Solver with Full GE**
+
+> *December 2025 - Complete Sequence Space Jacobian (SSJ) implementation with CUDA acceleration and Python-based General Equilibrium solver*
 
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/std/the-standard)
+[![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Eigen](https://img.shields.io/badge/Eigen-3.4-green.svg)](https://eigen.tuxfamily.org/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-yellow.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](https://opensource.org/licenses/MIT)
 
----
 
 ## 概要
 
@@ -25,7 +28,7 @@ Monad Engineは、**Two-Asset HANKモデル**（流動性資産と非流動性�
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Monad Engine v2.0                          │
+│                      Monad Engine v3.3                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
 │  │  Grid       │  │  Policy     │  │  Distribution           │  │
@@ -53,6 +56,50 @@ Monad Engineは、**Two-Asset HANKモデル**（流動性資産と非流動性�
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🚀 v3.3 新機能: GPU SSJ + Linearized GE
+
+### GPU加速 Sequence Space Jacobian
+
+CUDAカーネルによる完全GPU実行フロー:
+
+1. **Dual Number EGM**: 政策関数の自動微分 (`dC/dr_m`, `dB/dr_m`)
+2. **FakeNews Kernel**: 分布摂動の高速計算
+3. **IRF計算**: GPUでの集計・Toeplitz Jacobian構築
+
+### Jacobian出力サンプル (`gpu_jacobian.csv`)
+
+```csv
+t,dC,dB
+0,0.922237,9.44314
+1,0.818666,8.41489
+2,0.747127,7.4755
+...
+```
+
+- **dB/dr_m > 0**: 金利上昇 → 貯蓄増加（正常な反応）
+- **Mean-reverting**: 9.44 → 1.49（定常状態へ収束）
+
+### Python GEソルバー
+
+```python
+from monad.ge_solver import LinearizedGESolver
+import numpy as np
+
+solver = LinearizedGESolver("gpu_jacobian.csv", T=50)
+shock = np.ones(50) * 0.01  # 1% 永続的債務ショック
+dr_m, dC = solver.solve_full_ge(shock)
+
+print(f"Rate: +{dr_m[0]*10000:.1f}bps, Consumption: +{dC[0]*100:.2f}%")
+```
+
+### GE均衡応答
+
+![GE Debt Shock Response](docs/figures/ge_debt_shock.png)
+
+*1% 永続的国債増発ショックに対する一般均衡応答。左：金利パス（+10.6bps）、右：消費応答。*
 
 ---
 
