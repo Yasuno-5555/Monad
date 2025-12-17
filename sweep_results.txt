@@ -1,6 +1,0 @@
-phi=1.50 -> Peak Drop: -5.608910e-06
-phi=1.55 -> Peak Drop: -5.608910e-06
-phi=1.60 -> Peak Drop: -5.608910e-06
-phi=1.80 -> Peak Drop: -5.608910e-06
-phi=2.00 -> Peak Drop: -5.608910e-06
-phi=2.50 -> Peak Drop: -5.608910e-06

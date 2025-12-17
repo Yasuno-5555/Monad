@@ -46,4 +46,6 @@ Thumbs.db
 *.temp
 
 # But include documentation figures
+# But include documentation figures
 !docs/figures/*.png
+!experiments/*.png

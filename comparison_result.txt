@@ -1,5 +1,0 @@
-
-Peak Output Drop (Sticky):   -7150.6400
-Peak Output Drop (Flexible): -7150.6400
-Amplification Ratio: 1.00x
-FAILURE: Sticky wages did not amplify output drop.
