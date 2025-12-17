@@ -1,4 +1,12 @@
-# Monad Engine v4.0: NK-HANK Base
+# Monad Engine v6.0 "Izanagi"
+> **Global Nonlinear Solver:** Newton-Raphson on Sequence Space.
+> **Constraints:** Zero Lower Bound (ZLB) & Consumption-Export Disconnect.
+> **Result:** Successfully simulated the "Export-led Recession" under Liquidity Trap conditions.
+
+![Project Izanagi](experiments/project_izanagi.png)
+
+# Monad Engine v4.0: The "Monad Lab" Upgrade
+*(Previous Versions below)*
 
 **The "Monad Lab" Release**
 
