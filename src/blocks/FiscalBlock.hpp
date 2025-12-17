@@ -10,6 +10,38 @@ public:
     using Mat = Eigen::MatrixXd;
     using Vec = Eigen::VectorXd;
 
+    // v2.1: Progressive Tax System (HSV 2017)
+    // T(y) = y - lambda * y^(1 - tau)
+    // Average Tax Rate: t(y) = 1 - lambda * y^(-tau)
+    // Marginal Tax Rate: T'(y) = 1 - lambda * (1-tau) * y^(-tau)
+    struct ProgressiveTax {
+        double lambda = 1.0; // Level (1.0 = No tax at y=1 if tau=0)
+        double tau = 0.0;    // Progressivity (0 = Flat, >0 = Progressive)
+        
+        // Transfer Rule (Lump-sum or Targeted)
+        double transfer = 0.0; 
+        
+        // Calculate After-Tax Income (Disposable)
+        double after_tax(double pre_tax_income) const {
+            if (pre_tax_income <= 1e-9) return transfer; // Floor at transfer
+            
+            // HSV Formulation
+            double post_tax = lambda * std::pow(pre_tax_income, 1.0 - tau);
+            return post_tax + transfer;
+        }
+        
+        // Calculate Tax Paid
+        double tax_paid(double pre_tax_income) const {
+            return pre_tax_income - after_tax(pre_tax_income) + transfer; // tax - transfer
+        }
+    };
+    
+    struct FiscalPolicy {
+        ProgressiveTax tax_rule;
+        double G = 0.0; // Government Spending
+        double B_target = 0.0; // Debt Target
+    };
+
     // Debt Dynamics:
     // dB_t = (1 + r_ss) * dB_{t-1} + B_ss * dr_t + dG_t - dT_t
     // Fiscal Rule:

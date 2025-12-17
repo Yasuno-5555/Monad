@@ -5,20 +5,23 @@
 #include "../grid/MultiDimGrid.hpp"
 #include "../kernel/TwoAssetKernel.hpp"
 #include "../Params.hpp"
+#include "../gpu/CudaUtils.hpp"
+#include "../Dual.hpp"
 
 namespace Monad {
 
 class TwoAssetSolver {
     const MultiDimGrid& grid;
     const TwoAssetParam& params;
+    CudaBackend* gpu_backend = nullptr;
     
 public:
     // Internal buffer for expected values E[V(m', a', z')]
     std::vector<double> E_V_next; 
     std::vector<double> E_Vm_next; // Marginal Value E[dV/dm]
 
-    TwoAssetSolver(const MultiDimGrid& g, const TwoAssetParam& p) 
-        : grid(g), params(p), E_V_next(g.total_size), E_Vm_next(g.total_size) {
+    TwoAssetSolver(const MultiDimGrid& g, const TwoAssetParam& p, CudaBackend* gpu = nullptr) 
+        : grid(g), params(p), E_V_next(g.total_size), E_Vm_next(g.total_size), gpu_backend(gpu) {
     }
 
     // --- Core Solver Method ---
@@ -26,30 +29,187 @@ public:
     double solve_bellman(const TwoAssetPolicy& guess, TwoAssetPolicy& result, 
                          const IncomeProcess& income) {
         
-        // 1. Expectation Step (Matrix Mult over z)
+        // v3.0 GPU Acceleration
+        if (gpu_backend) {
+             // 1. Upload Loop State (Guess V_{t+1})
+             gpu_backend->upload_value(guess.value);
+             gpu_backend->upload_policy(guess.c_pol); 
+             // Net Income and Pi can be uploaded only once, but let's do safe upload for now.
+             gpu_backend->upload_pi(income.Pi_flat); 
+             
+             std::vector<double> h_net_income(grid.n_z);
+             for(int iz=0; iz<grid.n_z; ++iz) {
+                 h_net_income[iz] = params.fiscal.tax_rule.after_tax(income.z_grid[iz]);
+             }
+             gpu_backend->upload_income(h_net_income);
+             
+             // 2. Run Kernels
+             launch_expectations(*gpu_backend, params.r_m, params.sigma);
+             
+             std::vector<double> k_params = {
+               params.beta, params.r_m, params.r_a, params.sigma, params.m_min, params.chi
+             };
+             launch_bellman_kernel(*gpu_backend, k_params);
+             
+             // 3. Download Result (V_t)
+             gpu_backend->download_value(result.value);
+             gpu_backend->download_policy(result.c_pol, result.m_pol, result.a_pol, result.d_pol, result.adjust_flag);
+             
+             // 4. Convergence Check & Return
+             double max_diff = 0.0;
+             finalize_policy(guess, result, max_diff);
+             return max_diff;
+        }
         
+
+        // --- CPU Fallback ---
+        
+        // 1. Expectation Step
         compute_expectations(guess, income);
 
-        double max_diff = 0.0; // Initialize
+        double max_diff = 0.0;
         // 2. Solve Conditional Value Functions (Loop over z and a)
         for (int iz = 0; iz < grid.n_z; ++iz) {
             for (int ia = 0; ia < grid.N_a; ++ia) {
                 
                 double z_val = income.z_grid[iz];
+                double net_income = params.fiscal.tax_rule.after_tax(z_val);
                 
                 // --- Problem A: No Adjustment (d=0) ---
-                solve_no_adjust_slice(iz, ia, z_val, result);
+                solve_no_adjust_slice(iz, ia, net_income, result);
 
                 // --- Problem B: Adjustment (d != 0) ---
-                solve_adjust_slice(iz, ia, z_val, result);
+                solve_adjust_slice(iz, ia, net_income, result);
             }
         }
 
         // 3. Convergence Check
-        // Upper envelope was already applied incrementally in solve_adjust_slice
         finalize_policy(guess, result, max_diff);
 
         return max_diff;
+    }
+
+
+    // --- v3.2 Verification: Dual Kernel Test ---
+    void test_dual_kernel() {
+        if (!gpu_backend) {
+            std::cout << "[SKIP] No GPU Backend." << std::endl;
+            return;
+        }
+        std::cout << "--- Testing GPU Dual Kernel ---" << std::endl;
+        
+        // 1. Prepare State (Assuming initialized)
+        
+        // 2. Launch Dual Kernel (Seed r_m = 1.0)
+        std::cout << "Launching Bellman Dual (Seed r_m=1.0)..." << std::endl;
+        launch_bellman_dual(*gpu_backend, params.r_m, params.r_a, 
+                            1.0, 0.0, // Seed r_m=1, r_a=0
+                            gpu_backend->d_c_der, gpu_backend->d_m_der, gpu_backend->d_a_der);
+
+        // 3. Download Result
+        std::vector<double> h_c_der(grid.total_size);
+        std::vector<double> h_m_der(grid.total_size);
+        std::vector<double> h_a_der(grid.total_size);
+        
+        cudaMemcpy(h_c_der.data(), gpu_backend->d_c_der, grid.total_size * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_m_der.data(), gpu_backend->d_m_der, grid.total_size * sizeof(double), cudaMemcpyDeviceToHost);
+        
+        // 4. Verification Check
+        int check_count = 0;
+        for(int i=0; i<grid.total_size; i+=100) {
+             if (std::abs(h_c_der[i]) > 1e-9) {
+                 check_count++;
+             }
+        }
+        
+        if (check_count > 0) {
+             std::cout << "[PASS] GPU Dual Kernel produced non-zero derivatives." << std::endl;
+             std::cout << "Sample der(c)/der(rm) non-zero count: " << check_count << std::endl;
+             std::cout << "Sample val: " << h_c_der[grid.total_size/2] << std::endl;
+        } else {
+             std::cout << "[FAIL] All derivatives zero. Dual propagation failed." << std::endl;
+        }
+        
+        // --- v3.2 Step 3: Test FakeNews Kernel ---
+        test_fake_news();
+    }
+    
+    void test_fake_news() {
+        if (!gpu_backend) return;
+        
+        std::cout << "\n--- Testing GPU FakeNews Kernel ---" << std::endl;
+        
+        // 1. Upload current distribution to GPU
+        // For now, use uniform or compute one?
+        // Assume we have distribution from a previous run? 
+        // Let's upload a simple uniform distribution for testing
+        std::vector<double> h_D(grid.total_size, 1.0 / grid.total_size);
+        cudaMemcpy(gpu_backend->d_D, h_D.data(), grid.total_size * sizeof(double), cudaMemcpyHostToDevice);
+        
+        // 2. Launch FakeNews Kernel
+        std::cout << "Launching FakeNews Kernel..." << std::endl;
+        launch_fake_news(*gpu_backend, gpu_backend->d_D, gpu_backend->d_F);
+        
+        // 3. Download and check F vector
+        std::vector<double> h_F(grid.total_size);
+        cudaMemcpy(h_F.data(), gpu_backend->d_F, grid.total_size * sizeof(double), cudaMemcpyDeviceToHost);
+        
+        // 4. Compute sum (should be ~0 for mass conservation)
+        double sum_F = 0.0;
+        double sum_abs_F = 0.0;
+        for (double v : h_F) {
+            sum_F += v;
+            sum_abs_F += std::abs(v);
+        }
+        
+        std::cout << "Sum F (Should be ~0): " << sum_F << std::endl;
+        std::cout << "Sum |F|: " << sum_abs_F << std::endl;
+        
+        if (sum_abs_F > 1e-6) {
+            std::cout << "[PASS] GPU FakeNews produced non-zero F vector." << std::endl;
+        } else {
+            std::cout << "[FAIL] F vector is all zeros." << std::endl;
+        }
+        
+        // --- v3.2 Step 4: Test IRF Computation ---
+        test_irf_gpu();
+    }
+    
+    void test_irf_gpu() {
+        if (!gpu_backend) return;
+        
+        std::cout << "\n--- Computing GPU IRF (T=50) ---" << std::endl;
+        
+        int T = 50;
+        auto irf = compute_irf_gpu(*gpu_backend, T);
+        
+        // Print summary
+        std::cout << "GPU IRF Results:" << std::endl;
+        std::cout << "  dC(t=0):  " << irf[0] << std::endl;
+        std::cout << "  dC(t=1):  " << irf[1] << std::endl;
+        std::cout << "  dC(t=5):  " << irf[5] << std::endl;
+        std::cout << "  dC(t=10): " << irf[10] << std::endl;
+        std::cout << "  dC(t=25): " << irf[25] << std::endl;
+        std::cout << "  dC(t=49): " << irf[49] << std::endl;
+        
+        // Export to CSV
+        std::ofstream irf_file("gpu_irf.csv");
+        irf_file << "t,dC_rm\n";
+        for (int t = 0; t < T; ++t) {
+            irf_file << t << "," << irf[t] << "\n";
+        }
+        irf_file.close();
+        std::cout << "GPU IRF exported to gpu_irf.csv" << std::endl;
+        
+        // Check non-zero
+        double sum_abs = 0.0;
+        for (double v : irf) sum_abs += std::abs(v);
+        
+        if (sum_abs > 1e-6) {
+            std::cout << "[PASS] GPU IRF has non-zero values." << std::endl;
+        } else {
+            std::cout << "[FAIL] GPU IRF is all zeros." << std::endl;
+        }
     }
 
 private:
@@ -73,6 +233,9 @@ private:
     }
 
     void compute_expectations(const TwoAssetPolicy& next_pol, const IncomeProcess& income) {
+        // CPU Only
+
+        // CPU Fallback
         for(int flat_idx = 0; flat_idx < grid.total_size; ++flat_idx) {
             int im, ia, iz;
             grid.get_coords(flat_idx, im, ia, iz);

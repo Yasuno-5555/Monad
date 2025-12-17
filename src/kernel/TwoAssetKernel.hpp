@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include "../grid/MultiDimGrid.hpp"
+#include "../blocks/FiscalBlock.hpp"
 
 // v2.0 Two-Asset Kernel
 // Data structures for policy and value functions in the two-asset world.
@@ -15,6 +16,9 @@ struct TwoAssetParam {
     double chi; // Adjustment cost scale
     double sigma; // CRRA curvature
     double m_min; // Borrowing limit
+    
+    // v2.1 Fiscal
+    FiscalBlock::FiscalPolicy fiscal;
 };
 
 struct TwoAssetPolicy {

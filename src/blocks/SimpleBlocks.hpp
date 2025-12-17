@@ -59,6 +59,24 @@ public:
         
         return out;
     }
+
+    // v2.2: Monetary Block with ZLB
+    // i_star = r_star + phi_pi * pi
+    // i = max(i_star, 0)
+    struct MonetaryBlock {
+        double phi_pi = 1.5;
+        
+        Mat build_istar_jacobian(int T) {
+            // i_star = phi_pi * pi + (1 * r_star)
+            // J_istar_pi = phi_pi * I
+            return Mat::Identity(T, T) * phi_pi;
+        }
+        
+        // J_istar_rstar is just Identity
+        Mat build_istar_rstar(int T) {
+            return Mat::Identity(T, T);
+        }
+    };
 };
 
 } // namespace Monad

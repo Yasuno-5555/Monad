@@ -116,6 +116,47 @@ public:
         }
     }
 
+    // v2.1: Compute Fiscal Aggregates
+    void compute_fiscal_aggregates(const std::vector<double>& D, 
+                                   const IncomeProcess& income,
+                                   const TwoAssetParam& params,
+                                   double& TotalTax, 
+                                   double& TotalTransfers) {
+        TotalTax = 0.0;
+        TotalTransfers = 0.0;
+        
+        // Loop over grid
+        for(int i=0; i<grid.total_size; ++i) {
+            if (D[i] < 1e-12) continue;
+
+            int im, ia, iz;
+            grid.get_coords(i, im, ia, iz);
+            
+            double z_val = income.z_grid[iz];
+            // Assuming w=1 or z_val includes w
+            
+            // Tax Paid
+            double tax = params.fiscal.tax_rule.tax_paid(z_val);
+            // Transfer Received (if separate, currently bundled in tax_paid as negative tax, or we can separate if struct allows)
+            // In ProgressiveTax struct: tax_paid = pre - after + transfer.
+            // Wait, tax_paid includes transfer component? 
+            // after_tax = post_tax_income + transfer
+            // tax_paid = pre - after + transfer = pre - (post + transfer) + transfer = pre - post.
+            // Actually, usually "Tax Revenue" is T(y), and Transfers are Tr.
+            // If we use T(y) = y - lambda*y^(1-tau), that is pure tax. Transfer is extra.
+            // My struct says: after_tax = lambda*y^(1-tau) + transfer.
+            // So pure tax = y - lambda*y^(1-tau).
+            // Transfer = transfer.
+            
+            // Let's manually compute decomposition using struct fields
+            double post_tax_pure = params.fiscal.tax_rule.lambda * std::pow(z_val, 1.0 - params.fiscal.tax_rule.tau);
+            double pure_tax = z_val - post_tax_pure;
+            
+            TotalTax += D[i] * pure_tax;
+            TotalTransfers += D[i] * params.fiscal.tax_rule.transfer;
+        }
+    }
+
 private:
     // Helper: Find linear interpolation weights for value 'val' on grid 'g'
     inline void find_weights(const UnifiedGrid& g, double val, 

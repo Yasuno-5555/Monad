@@ -17,6 +17,7 @@
 #include "kernel/TwoAssetKernel.hpp"
 #include "solver/TwoAssetSolver.hpp"
 #include "aggregator/DistributionAggregator3D.hpp"
+#include "gpu/CudaUtils.hpp"
 
 // Helper: Power Grid Generator (concentration near min)
 UnifiedGrid make_grid(int size, double min, double max, double curv) {
@@ -44,6 +45,9 @@ IncomeProcess make_income() {
 
 int main() {
     try {
+        // v3.0: GPU Init
+        std::cout << "[INFO] Initializing Monad Engine v3.0 (GPU Hybrid)..." << std::endl;
+
         std::cout << "=== Monad Engine v2.0: Two-Asset Stationary Solver ===" << std::endl;
 
         // 1. Setup Parameters
@@ -55,6 +59,11 @@ int main() {
         params.sigma = 2.0; // CRRA
         params.m_min = -2.0; // Borrowing limit matching grid min
         // params.chi = 1e8; // Uncomment to test Liquid-Only Limit
+        
+        // v2.1 Fiscal Policy (HSV 2017)
+        params.fiscal.tax_rule.lambda = 0.9; // Scale of post-tax income
+        params.fiscal.tax_rule.tau = 0.15;   // Progressivity
+        params.fiscal.tax_rule.transfer = 0.05; // Lump-sum transfer
 
         // 2. Setup Grids
         // Liquid: [-2.0, 50.0], concentrated near 0
@@ -67,13 +76,20 @@ int main() {
         std::cout << "Grid Size: " << grid.total_size 
                   << " (" << grid.N_m << "x" << grid.N_a << "x" << grid.N_z << ")" << std::endl;
         
+        // v3.0 GPU Setup (Real dimensions)
+        auto gpu_backend = std::make_unique<Monad::CudaBackend>(grid.N_m, grid.N_a, grid.N_z);
+        gpu_backend->verify_device();
+        // Pre-upload static grids
+        gpu_backend->upload_grids(grid.m_grid.nodes, grid.a_grid.nodes);
+        
         // 3. Initialize Policy & Solver
         Monad::TwoAssetPolicy policy(grid.total_size);
         for(int i=0; i<grid.total_size; ++i) policy.c_pol[i] = 0.1; // Avoid singularity
         
         Monad::TwoAssetPolicy next_policy(grid.total_size);
         
-        auto solver = std::make_unique<Monad::TwoAssetSolver>(grid, params);
+        // Pass GPU backend to solver
+        auto solver = std::make_unique<Monad::TwoAssetSolver>(grid, params, gpu_backend.get());
             
             // 4. Policy Iteration (VFI / EGM)
             std::cout << "\n--- Solving Policy ---" << std::endl;
@@ -115,6 +131,15 @@ int main() {
         std::cout << "Aggregate Liquid (B):   " << Agg_Liquid << std::endl;
         std::cout << "Aggregate Illiquid (K): " << Agg_Illiquid << std::endl;
         std::cout << "Total Wealth:           " << Agg_Liquid + Agg_Illiquid << std::endl;
+        
+        double Agg_Tax, Agg_Transfers;
+        aggregator.compute_fiscal_aggregates(D, income, params, Agg_Tax, Agg_Transfers);
+        std::cout << "Aggregate Tax Revenue:  " << Agg_Tax << std::endl;
+        std::cout << "Aggregate Transfers:    " << Agg_Transfers << std::endl;
+        std::cout << "Primary Surplus (T-Tr): " << Agg_Tax - Agg_Transfers << std::endl;
+
+        // v3.2 Verification
+        solver->test_dual_kernel();
 
         // 7. Export Data for Visualization
         std::cout << "\nWriting output files..." << std::endl;
@@ -368,6 +393,98 @@ int main() {
         heat_file.close();
         std::cout << "  Exported heatmap_sensitivity.csv" << std::endl;
         }
+
+        // 11. Verify v2.2 Step: ZLB Solver
+        std::cout << "\n--- Verifying v2.2 ZLB Solver (Liquidity Trap) ---" << std::endl;
+        
+        // Construct Large Negative r_star shock (Demand Shock)
+        // e.g. -2% for 10 quarters
+        Eigen::VectorXd dr_star = Eigen::VectorXd::Zero(T);
+        for(int t=0; t<10; ++t) dr_star[t] = -0.05; // -500bps
+
+        
+        auto zlb_results = ge_solver.solve_with_zlb(dr_star);
+        auto& i_path = zlb_results["i"];
+        auto& Y_path = zlb_results["dY"];
+        auto& eps_path = zlb_results["eps"];
+        
+        std::cout << "ZLB Scenario Results (t=0..15):" << std::endl;
+        std::cout << "t | r* | i | i (Unc) | Y | eps" << std::endl;
+        
+        // Solve Unconstrained for comparison
+        auto unc_results = ge_solver.solve_monetary_shock(dr_star); // This solves for r_m shock, not r_star shock... 
+        // Wait, solve_monetary_shock takes dr_m. Here we have dr_star.
+        // In the Taylor rule: i = r_star + phi * pi.
+        // If we want to compare, we need an "Unconstrained" solver for r_star.
+        // But solve_with_zlb already calculates unconstrained 'istar' internally, but doesn't return Y_unc.
+        // Let's rely on looking at 'i'. If ZLB binds, i=0.
+        
+        for(int t=0; t<15; ++t) {
+             std::cout << t << " | " 
+                       << dr_star[t] << " | " 
+                       << i_path[t] << " | "
+                       << zlb_results["i_star"][t] << " | "
+                       << Y_path[t] << " | " 
+                       << eps_path[t] << std::endl;
+        }
+        
+        if (i_path[0] > -1e-6 && zlb_results["i_star"][0] < -1e-6) {
+             std::cout << "  [PASS] ZLB Binding! (i=0 while i* < 0)" << std::endl;
+             std::cout << "  [INFO] Output drop: " << Y_path[0] << std::endl;
+        } else {
+             std::cout << "  [WARN] ZLB not binding? Increase shock size." << std::endl;
+        }
+
+        // 12. Experiment: Odyssean Forward Guidance (v2.3)
+        std::cout << "\n--- Experiment: Odyssean Forward Guidance (v2.3) ---" << std::endl;
+        
+        // Baseline: We already have zlb_results (Baseline)
+        double Y_impact_base = zlb_results["dY"][0];
+        
+        // Forward Guidance: Force rates to 0 for 5 quarters AFTER natural lift-off.
+        // In Baseline, ZLB bound for approx t=0..12? (Need to check output)
+        // Let's force t=15,16,17,18,19 (assuming lift-off is earlier).
+        // A robust way is to find lift-off from baseline and add K periods.
+        
+        std::vector<int> forced_periods;
+        for(int t=0; t<T; ++t) {
+            if (zlb_results["eps"][t] > 1e-5) {
+                // Was binding in baseline
+            } else {
+                // Not binding. If we just exited, add FG periods.
+                // Simple fixed test: Force t=15 to 20.
+            }
+        }
+        // Let's use fixed periods based on shock length (10). 
+        // Shock ends at 10. Trap likely ends 12-14.
+        // Let's force t=15, 16, 17, 18, 19.
+        forced_periods = {15, 16, 17, 18, 19};
+        
+        auto fg_results = ge_solver.solve_with_zlb(dr_star, forced_periods);
+        double Y_impact_fg = fg_results["dY"][0];
+        
+        std::cout << "Impact Comparison (t=0):" << std::endl;
+        std::cout << "  Baseline Output: " << Y_impact_base << std::endl;
+        std::cout << "  FG Output:       " << Y_impact_fg << std::endl;
+        std::cout << "  Difference:      " << Y_impact_fg - Y_impact_base << std::endl;
+        
+        if (Y_impact_fg > Y_impact_base) { // Less negative?
+             // Since Y_impact is negative (-0.03 etc), "Higher" means closer to 0?
+             // No, "Stimulus" means Y increases.
+             // If Y_base = -0.05, Y_fg = -0.04. -0.04 > -0.05.
+             std::cout << "  [PASS] Forward Guidance improved current output (Expectations Channel active)." << std::endl;
+        } else {
+             std::cout << "  [FAIL] No improvement from FG?" << std::endl;
+        }
+
+        std::cout << "Detailed Forward Guidance Path:" << std::endl;
+        std::cout << "t | i (Base) | i (FG) | Y (Base) | Y (FG)" << std::endl;
+        for(int t=0; t<25; ++t) {
+             std::cout << t << " | " 
+                       << zlb_results["i"][t] << " | " << fg_results["i"][t] << " | "
+                       << zlb_results["dY"][t] << " | " << fg_results["dY"][t] << std::endl;
+        }
+
 
         std::cout << "Done." << std::endl;
 
