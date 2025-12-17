@@ -1,143 +1,99 @@
-# 使用ガイド
+# Monad Engine v4.0 Usage Guide
 
-## 基本的な使い方
+## Workflow Overview
 
-### 1. パラメータ設定
-
-`src/main_two_asset.cpp` でパラメータを調整:
-
-```cpp
-Monad::TwoAssetParam params;
-params.beta = 0.97;    // 割引因子
-params.r_m = 0.01;     // 流動性資産金利 (年率1%)
-params.r_a = 0.05;     // 非流動性資産金利 (年率5%)
-params.chi = 20.0;     // 調整コスト
-params.sigma = 2.0;    // CRRA
-params.m_min = -2.0;   // 借入下限
-```
-
-### 2. グリッド設定
-
-```cpp
-// 流動性資産: [-2, 50], 50点
-auto m_grid = make_grid(50, -2.0, 50.0, 3.0);
-
-// 非流動性資産: [0, 100], 40点
-auto a_grid = make_grid(40, 0.0, 100.0, 2.0);
-
-// 所得過程: 2状態
-auto income = make_income();
-```
-
-### 3. 実行
-
-```bash
-# ビルド
-g++ -std=c++17 src/main_two_asset.cpp -I . -I build_phase3/_deps/eigen-src/ -o MonadTwoAsset.exe
-
-# 実行
-./MonadTwoAsset.exe
-```
-
-### 4. 出力確認
-
-```bash
-# CSVファイル確認
-head policy_2asset.csv
-head ge_irf.csv
-head irf_groups.csv
-
-# 可視化
-python monad/vis_inequality.py
-```
+The Monad Engine v4.0 workflow consists of two phases:
+1.  **Engine Phase (C++)**: High-performance computation of Micro-Jacobians ($J_{C,r}, J_{C,Y}$).
+2.  **Lab Phase (Python)**: General Equilibrium solving and Policy Analysis using `monad` package.
 
 ---
 
-## カスタマイズ
+## 1. Engine Phase (C++)
 
-### 所得過程の変更
+First, you must build and run the C++ core to generate the Jacobian data.
 
-```cpp
-IncomeProcess make_income() {
-    IncomeProcess p;
-    p.n_z = 3;  // 3状態に変更
-    p.z_grid = {0.5, 1.0, 1.5};  // 低・中・高所得
-    p.Pi_flat = {
-        0.8, 0.15, 0.05,
-        0.1, 0.8,  0.1,
-        0.05, 0.15, 0.8
-    };
-    return p;
+### 1.1 Parameters
+Modify `test_model.json` to configure the economic environment:
+- `beta`: Discount factor
+- `r_m`, `r_a`: Steady-state interest rates
+- `chi`: Adjustment cost
+
+### 1.2 Build
+Use CMake to compile the project.
+
+```bash
+mkdir build_phase3
+cd build_phase3
+cmake .. -G "Visual Studio 17 2022" -A x64
+cmake --build . --config Release
+```
+
+### 1.3 Run (Generate Data)
+Execute the solver relative to the project root (to ensure JSON/CSV paths are correct).
+
+```powershell
+.\Release\MonadTwoAssetCUDA.exe
+```
+
+**Output Files:** (Generated in project root)
+- `gpu_jacobian_R.csv`: Consumption response to Interest Rate shock.
+- `gpu_jacobian_Z.csv`: Consumption response to Income shock (MPC).
+
+---
+
+## 2. Lab Phase (Python)
+
+Once the CSVs are generated, use the **Monad Lab** to conduct research.
+
+### 2.1 Basic Experiment
+Run the monetary shock verification script:
+
+```bash
+python experiments/02_monetary_shock.py
+```
+This solves the NK-HANK General Equilibrium and plots Impulse Response Functions (IRFs).
+
+### 2.2 Advanced Experiment (Forward Guidance)
+Test the effect of future policy announcements:
+
+```bash
+python experiments/03_forward_guidance.py
+```
+This compares immediate rate cuts vs. future promises, verifying the "Anticipation Effect".
+
+---
+
+## 3. Customizing the Lab
+
+You can create your own experiments by using the `monad` package.
+
+### Example: Custom Fiscal Shock
+Create a new file `experiments/my_fiscal_shock.py`:
+
+```python
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from monad.solver import NKHANKSolver
+
+# Initialize Solver
+solver = NKHANKSolver(
+    path_R="../gpu_jacobian_R.csv",
+    path_Z="../gpu_jacobian_Z.csv"
+)
+
+# Define Shock (e.g., Government Spending increases demand Y directly?)
+# Note: Currently solver handles Monetary Policy (r).
+# For Fiscal Policy, extend the DAG in monad/solver.py.
+```
+
+### Changing NK Parameters
+You can tweak the New Keynesian block parameters when initializing the solver:
+
+```python
+params = {
+    'kappa': 0.05,  # Stickier prices
+    'beta': 0.99,
+    'phi_pi': 1.5
 }
-```
-
-### ショックの変更
-
-```cpp
-// AR(1)ショック (持続性0.8)
-Eigen::VectorXd dr_m(T);
-double rho = 0.8;
-double shock_size = 0.01;  // 1%
-for(int t=0; t<T; ++t) dr_m[t] = shock_size * std::pow(rho, t);
-```
-
-### 分析グループの変更
-
-`InequalityAnalyzer` で追加グループ定義:
-
-```cpp
-// 例: 中間層 (50-90パーセンタイル)
-auto idx_middle = get_indices_by_wealth_percentile(0.50, 0.90);
-```
-
----
-
-## トラブルシューティング
-
-### 収束しない場合
-
-1. グリッドを粗くする（計算高速化）
-2. 初期政策を調整
-3. 反復回数上限を増やす
-
-### メモリ不足
-
-1. グリッドサイズ削減
-2. スパース行列の使用確認
-3. 64bit環境で実行
-
-### 数値不安定
-
-1. `chi` (調整コスト) を増やす
-2. 借入下限 `m_min` を緩める
-3. 割引因子 `beta` を下げる
-
----
-
-## 高度な使用法
-
-### Python連携
-
-```python
-import subprocess
-import pandas as pd
-
-# C++エンジン実行
-subprocess.run(["./MonadTwoAsset.exe"])
-
-# 結果読み込み
-df = pd.read_csv("ge_irf.csv")
-print(f"GE乗数: {df['dY'][0] / df['dC_direct'][0]:.3f}")
-```
-
-### バッチ実行
-
-```python
-import json
-
-for chi in [10, 20, 50]:
-    # パラメータ変更 (要: config対応)
-    subprocess.run(["./MonadTwoAsset.exe"])
-    df = pd.read_csv("ge_irf.csv")
-    print(f"chi={chi}: 乗数={df['dY'][0]/df['dC_direct'][0]:.3f}")
+solver = NKHANKSolver(..., params=params)
 ```

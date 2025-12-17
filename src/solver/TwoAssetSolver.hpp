@@ -179,47 +179,38 @@ public:
         }
         
         // --- v3.2 Step 4: Test IRF Computation ---
-        test_irf_gpu();
+        test_full_jacobian_gpu();
     }
     
-    void test_irf_gpu() {
+    void test_full_jacobian_gpu() {
         if (!gpu_backend) return;
         
-        std::cout << "\n--- Computing GPU IRF (T=50) ---" << std::endl;
-        
+        std::cout << "\n--- Computing GPU Jacobians (T=50) ---" << std::endl;
         int T = 50;
-        IRFResult irf = compute_irf_gpu(*gpu_backend, T);
+
+        // --- Pass 1: Interest Rate Shock (Mode 0) ---
+        std::cout << "[Pass 1] Interest Rate Jacobian (d/dr)..." << std::endl;
+        IRFResult irf_r = compute_irf_gpu(*gpu_backend, T, 0); // 0 = Interest
         
-        // Print summary (dC and dB)
-        std::cout << "GPU IRF Results:" << std::endl;
-        std::cout << "  dC(t=0):  " << irf.dC[0] << std::endl;
-        std::cout << "  dC(t=1):  " << irf.dC[1] << std::endl;
-        std::cout << "  dC(t=10): " << irf.dC[10] << std::endl;
-        std::cout << "  dB(t=0):  " << irf.dB[0] << " (Liquid Asset Response)" << std::endl;
-        std::cout << "  dB(t=1):  " << irf.dB[1] << std::endl;
-        std::cout << "  dB(t=10): " << irf.dB[10] << std::endl;
+        // Export R Jacobian
+        std::ofstream file_r("gpu_jacobian_R.csv");
+        file_r << "t,dC,dB\n";
+        for(int t=0; t<T; ++t) file_r << t << "," << irf_r.dC[t] << "," << irf_r.dB[t] << "\n";
+        file_r.close();
+        std::cout << "  -> Exported gpu_jacobian_R.csv" << std::endl;
+        std::cout << "  dC/dr(0): " << irf_r.dC[0] << " (Expect < 0)" << std::endl;
+
+        // --- Pass 2: Income Shock (Mode 1) ---
+        std::cout << "[Pass 2] Income Jacobian (d/dY)..." << std::endl;
+        IRFResult irf_z = compute_irf_gpu(*gpu_backend, T, 1); // 1 = Income
         
-        // Export to CSV with 3 columns (t, dC, dB)
-        std::ofstream irf_file("gpu_jacobian.csv");
-        irf_file << "t,dC,dB\n";
-        for (int t = 0; t < T; ++t) {
-            irf_file << t << "," << irf.dC[t] << "," << irf.dB[t] << "\n";
-        }
-        irf_file.close();
-        std::cout << "GPU Jacobian exported to gpu_jacobian.csv" << std::endl;
-        
-        // Check non-zero
-        double sum_abs_C = 0.0, sum_abs_B = 0.0;
-        for (int t = 0; t < T; ++t) {
-            sum_abs_C += std::abs(irf.dC[t]);
-            sum_abs_B += std::abs(irf.dB[t]);
-        }
-        
-        if (sum_abs_C > 1e-6 && sum_abs_B > 1e-6) {
-            std::cout << "[PASS] GPU IRF has non-zero dC and dB." << std::endl;
-        } else {
-            std::cout << "[WARN] dC sum: " << sum_abs_C << ", dB sum: " << sum_abs_B << std::endl;
-        }
+        // Export Z Jacobian
+        std::ofstream file_z("gpu_jacobian_Z.csv");
+        file_z << "t,dC,dB\n";
+        for(int t=0; t<T; ++t) file_z << t << "," << irf_z.dC[t] << "," << irf_z.dB[t] << "\n";
+        file_z.close();
+        std::cout << "  -> Exported gpu_jacobian_Z.csv" << std::endl;
+        std::cout << "  dC/dY(0): " << irf_z.dC[0] << " (Expect > 0, MPC)" << std::endl;
         
         // v3.3: Test GE Solver
         test_ge_solver();

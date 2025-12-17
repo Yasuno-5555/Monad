@@ -416,7 +416,8 @@ __global__ void bellman_dual_no_adjust_kernel(
     double beta, 
     Duald r_m, Duald r_a, // Dual Seeds
     double sigma, double m_min,
-    const double* d_z_grid
+    const double* d_z_grid,
+    int shock_mode
 ) {
     extern __shared__ Duald s_dual_mem[]; // Typed as Duald
     Duald* s_m_endo = s_dual_mem;
@@ -431,7 +432,10 @@ __global__ void bellman_dual_no_adjust_kernel(
     // Dual Setup
     Duald a_curr(d_a_grid[ia], 0.0);
     double net_income_val = d_z_grid[iz];
-    Duald net_income(net_income_val, 0.0); // y assumed fixed for now (Dual param shock)
+    // Income Shock Logic: If shock_mode=1, derivative is proportional to income (z_i)
+    // This assumes unit shock dZ/Z = 1 (or dlogZ = 1) scales all income by 1%
+    double income_der = (shock_mode == 1) ? net_income_val : 0.0;
+    Duald net_income(net_income_val, income_der);
 
     Duald a_next = a_curr * (1.0 + r_a); // Dual propagation
     
@@ -505,10 +509,17 @@ __global__ void bellman_dual_no_adjust_kernel(
 
 void launch_bellman_dual(CudaBackend& backend, double r_m_val, double r_a_val, 
                         double seed_rm, double seed_ra,
-                        double* d_out_c_der, double* d_out_m_der, double* d_out_a_der) {
+                        double* d_out_c_der, double* d_out_m_der, double* d_out_a_der,
+                        int shock_mode) {
     
-    Duald r_m(r_m_val, seed_rm);
-    Duald r_a(r_a_val, seed_ra);
+    // Determine seeds based on Shock Mode
+    // Mode 0: Interest Rate Shock (r_m moves)
+    // Mode 1: Income Shock (r_m fixed, Z moves)
+    double s_rm = (shock_mode == 0) ? 1.0 : 0.0;
+    double s_ra = 0.0; // r_a assumed fixed for now
+    
+    Duald r_m(r_m_val, s_rm);
+    Duald r_a(r_a_val, s_ra);
     
     int Nm = backend.N_m;
     int Na = backend.N_a;
@@ -522,21 +533,9 @@ void launch_bellman_dual(CudaBackend& backend, double r_m_val, double r_a_val,
     size_t shared_size = 2 * Nm * sizeof(Duald);
 
     // We need standard inputs (EV, EVm, grids)
-    // We assume backend.d_V_curr etc are already populated with steady state stuff?
-    // Actually input is d_V_next (EV).
-    // d_EV, d_EVm are computed by expectations kernel.
-    
-    // Note: We need d_c_pol, d_m_pol for output values?
-    // The kernel writes to d_c_val, d_c_der.
-    // We can pass backend.d_c_pol as d_c_val.
-    // And d_out_c_der as d_c_der.
-    
     double sigma = 1.0; // Fixed for now or pass in
     double m_min = 0.0;
     double beta = 0.986; // TO FIX: Pass full params vector
-    
-    // Using default/placeholder params if not passed
-    // Ideally launch_bellman_dual should take params vector too.
     
     bellman_dual_no_adjust_kernel<<<blocks, threads, shared_size>>>(
         backend.d_c_pol, d_out_c_der,
@@ -547,7 +546,8 @@ void launch_bellman_dual(CudaBackend& backend, double r_m_val, double r_a_val,
         backend.d_m_grid, backend.d_a_grid,
         Nm, Na, Nz,
         beta, r_m, r_a, sigma, m_min,
-        backend.d_y_grid // Assuming z grid passed here for net income
+        backend.d_y_grid, // Assuming z grid passed here for net income
+        shock_mode 
     );
     
     cudaError_t err = cudaGetLastError();
@@ -812,7 +812,7 @@ void launch_dist_forward(CudaBackend& backend, double* d_dD, double* d_dD_next) 
 }
 
 // Full IRF Computation on GPU - v3.3 Extended with dB
-IRFResult compute_irf_gpu(CudaBackend& backend, int T) {
+IRFResult compute_irf_gpu(CudaBackend& backend, int T, int shock_mode) {
     int total = backend.N_m * backend.N_a * backend.N_z;
     
     IRFResult result;
@@ -822,6 +822,22 @@ IRFResult compute_irf_gpu(CudaBackend& backend, int T) {
     // Allocate temp buffer for forward iteration
     double* d_dD_temp;
     cudaMalloc(&d_dD_temp, total * sizeof(double));
+    
+    // 4. Compute Jacobian of Policy (Backward)
+    // Need current params r_m, r_a.
+    // For now assuming r_m = 0.01 (1%), r_a = 0.0.
+    // TO FIX: Should pull from Params or Backend state.
+    // This step does NOT depend on t, only on SS. So do it ONCE provided backend has SS policy.
+    static bool deriv_computed = false;
+    // Actually for different shock modes we need to recompute.
+    // Let's recompute always to be safe.
+    
+    // Passed shock_mode determines the seed
+    launch_bellman_dual(backend, 0.01, 0.0, 1.0, 0.0, 
+                        backend.d_c_der, backend.d_m_der, backend.d_a_der, shock_mode);
+        
+    // 5. Compute Fake News Vector (F_0) (Forward Impulses)
+    launch_fake_news(backend, backend.d_D, backend.d_F);
     
     // Start with F as dD_0 (impact effect)
     // d_F already contains F from fake_news_kernel

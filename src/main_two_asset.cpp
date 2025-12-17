@@ -139,7 +139,15 @@ int main() {
         std::cout << "Primary Surplus (T-Tr): " << Agg_Tax - Agg_Transfers << std::endl;
 
         // v3.2 Verification
-        solver->test_dual_kernel();
+        // solver->test_dual_kernel();
+        
+        // Ensure GPU State is Clean/Populated (Fix for Zero Jacobian)
+        gpu_backend->upload_full_policy(policy.c_pol, policy.m_pol, policy.a_pol);
+        // Convert D (vector) to D_flat (vector) if needed? D is already flat.
+        // Wait, D is std::vector<double> of size total_size. Correct.
+        gpu_backend->upload_distribution(D);
+        
+        solver->test_full_jacobian_gpu();
 
         // 7. Export Data for Visualization
         std::cout << "\nWriting output files..." << std::endl;

@@ -14,6 +14,11 @@
 #include "ssj/aggregator.hpp"
 #include "ssj/ssj_solver.hpp"
 
+// v3.3 GPU & Two Asset Support
+#include "solver/TwoAssetSolver.hpp"
+#include "kernel/TwoAssetKernel.hpp"
+#include "grid/MultiDimGrid.hpp"
+
 // Simple CSV Writer Helpers
 void write_csv_ss(const std::string& filename, const UnifiedGrid& grid, 
                   const std::vector<double>& c, const std::vector<double>& a_pol, 
@@ -175,8 +180,63 @@ int main(int argc, char* argv[]) {
         
         // Load Grid & Params
         JsonLoader::load_model(config_path, grid, params);
+        
+        // --- v4.0 GPU Jacobian Test Hook ---
+        if (params.get("test_gpu_jacobian", 0.0) > 0.0) {
+            std::cout << "\n[TEST] Running GPU Jacobian Diagnostics..." << std::endl;
+            
+            // Map params
+            Monad::TwoAssetParam p2;
+            p2.beta = params.get_required("beta");
+            p2.r_m = params.get("r_guess", 0.02); // Use initial guess as steady state R
+            p2.r_a = params.get("r_a", 0.00); 
+            p2.sigma = params.get("sigma", 2.0);
+            p2.chi = params.get("chi", 10.0);
+            p2.m_min = params.get("m_min", 0.0);
+            p2.fiscal.labor_tax = 0.0; // Simplified
+            
+            // Build Grids
+            // Assumption: a_grid same as m_grid for test
+            Monad::MultiDimGrid mg(grid, grid, params.income.n_z);
+            
+            // Init GPU Backend
+            std::cout << "Initializing GPU Backend..." << std::endl;
+            Monad::CudaBackend gpu(mg.N_m, mg.N_a, mg.N_z);
+            gpu.verify_device();
+            
+            // Upload Grid
+            gpu.upload_grids(grid.nodes, grid.nodes); // Using m_grid for both
+            std::cout << "Grids uploaded." << std::endl;
+            
+            // Init Solver
+            Monad::TwoAssetSolver solver(mg, p2, &gpu);
+            
+            // Before computing Jacobian, we normally need a Steady State on GPU.
+            // test_full_jacobian_gpu calls compute_irf_gpu.
+            // compute_irf_gpu requires d_c_pol, d_m_pol, d_D to be populated?
+            // Yes, compute_irf_gpu uses d_m_pol, d_c_pol, d_D.
+            // So we need to solve SS first or mock it.
+            // But test_ge_solver downloads policy.
+            
+            // Let's run a quick SS solve on GPU to populate state
+            std::cout << "Solving initial GPU Steady State..." << std::endl;
+            Monad::TwoAssetPolicy guess(mg.total_size);
+            // Init guess (consume everything)
+            for(int i=0; i<mg.total_size; ++i) {
+                guess.c_pol[i] = 1.0; 
+                guess.value[i] = 0.0;
+            }
+            
+            solver.solve_steady_state_ge(guess, params.income, p2.r_m, -1.0 /* B target dummy */, 50, 1e-6);
+            
+            // Now run Jacobian Test
+            solver.test_full_jacobian_gpu();
+            
+            std::cout << "[TEST] GPU Diagnostics Complete." << std::endl;
+            return 0;
+        }
 
-        // 2. Solve Steady State
+        // 2. Solve Steady State (Legacy / 1-Asset)
         std::cout << "\n--- Step 1: Solving Steady State ---" << std::endl;
         
         double r_guess = params.get("r_guess", 0.02);

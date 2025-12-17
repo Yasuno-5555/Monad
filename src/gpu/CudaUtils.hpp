@@ -113,6 +113,17 @@ public:
     void upload_policy(const std::vector<double>& h_c) {
         CUDA_CHECK(cudaMemcpy(d_c_pol, h_c.data(), N_m * N_a * N_z * sizeof(double), cudaMemcpyHostToDevice));
     }
+
+    void upload_full_policy(const std::vector<double>& h_c, const std::vector<double>& h_m, const std::vector<double>& h_a) {
+        size_t size = N_m * N_a * N_z * sizeof(double);
+        CUDA_CHECK(cudaMemcpy(d_c_pol, h_c.data(), size, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_m_pol, h_m.data(), size, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_a_pol, h_a.data(), size, cudaMemcpyHostToDevice));
+    }
+
+    void upload_distribution(const std::vector<double>& h_D) {
+        CUDA_CHECK(cudaMemcpy(d_D, h_D.data(), N_m * N_a * N_z * sizeof(double), cudaMemcpyHostToDevice));
+    }
     
     // Download Expectation Results
     void download_expectations(std::vector<double>& h_EV, std::vector<double>& h_EVm) {
@@ -181,9 +192,10 @@ void launch_bellman_kernel(CudaBackend& backend, const std::vector<double>& para
 void launch_expectations(CudaBackend& backend, double r_m, double sigma);
 void launch_bellman_dual(CudaBackend& backend, double r_m_val, double r_a_val, 
                         double seed_rm, double seed_ra,
-                        double* d_out_c_der, double* d_out_m_der, double* d_out_a_der);
+                        double* d_out_c_der, double* d_out_m_der, double* d_out_a_der,
+                        int shock_mode = 0);
 void launch_fake_news(CudaBackend& backend, const double* d_D, double* d_F);
-IRFResult compute_irf_gpu(CudaBackend& backend, int T);
+IRFResult compute_irf_gpu(CudaBackend& backend, int T, int shock_mode = 0);
 double gpu_weighted_sum(const double* d_a, const double* d_b, int n);
 void launch_dist_forward(CudaBackend& backend, double* d_dD, double* d_dD_next);
 
