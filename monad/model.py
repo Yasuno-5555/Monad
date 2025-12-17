@@ -1,173 +1,78 @@
-import json
-import subprocess
-import pandas as pd
-import numpy as np
 import os
-import shutil
-from monad.process import rouwenhorst
+import subprocess
+import json
+from .solver import NKHANKSolver
 
 class MonadModel:
-    def __init__(self, name="Standard_HANK"):
-        self.name = name
-        self.params = {
-            "beta": 0.96,
-            "sigma": 2.0, 
-            "alpha": 0.33,
-            "A": 1.0,
-            "r_guess": 0.02
-        }
-        # Income Risk Parameters (Default: No Risk)
-        self.risk_params = {
-            "rho": 0.9,
-            "sigma_eps": 0.0, # 0.0 means deterministic
-            "n_z": 1
-        }
-        self.grid_config = {
-            "type": "Log-spaced", 
-            "n_points": 500, 
-            "min": 0.001, # Avoid 0.0 for CRRA
-            "max": 100.0,
-            "potency": 2.0
-        }
-        self.run_shock = True
+    """
+    High-level wrapper for the Monad Engine.
+    Automates the pipeline: Config -> C++ Engine -> GPU -> CSV -> Python Solver.
+    """
+    def __init__(self, binary_path, working_dir="."):
+        self.binary_path = binary_path
+        self.working_dir = working_dir
 
-    def set_param(self, key, value):
-        self.params[key] = value
-
-    def set_risk(self, rho, sigma_eps, n_z=7):
-        self.risk_params["rho"] = rho
-        self.risk_params["sigma_eps"] = sigma_eps
-        self.risk_params["n_z"] = n_z
-    
-    def set_fiscal(self, lambda_=1.0, tau=0.0, transfer=0.0):
-        self.params["tax_lambda"] = lambda_
-        self.params["tax_tau"] = tau
-        self.params["tax_transfer"] = transfer
-    
-    def set_unemployment(self, u_rate: float = 0.05, replacement_rate: float = 0.4):
+    def run(self, params=None, config_path="test_model.json"):
         """
-        Enable unemployment risk in the income process.
-        
-        Parameters:
-        -----------
-        u_rate : float
-            Steady-state unemployment rate (default 5%)
-        replacement_rate : float
-            Unemployment benefit as fraction of mean wage (default 40%)
+        Executes the full pipeline.
+        1. Updates JSON configuration (if params provided).
+        2. Runs C++ Engine.
+        3. Initializes and returns NKHANKSolver.
         """
-        self.risk_params["unemployment"] = True
-        self.risk_params["u_rate"] = u_rate
-        self.risk_params["replacement_rate"] = replacement_rate
-        
-        # Also store in params for C++ to access
-        self.params["unemployment_benefit"] = replacement_rate
+        if params:
+            self._update_config(config_path, params)
 
-    def define_grid(self, size=500, type="Log-spaced", max_asset=100.0):
-        self.grid_config["n_points"] = size
-        self.grid_config["type"] = type
-        self.grid_config["max"] = max_asset
-
-    def solve(self, exe_path="MonadEngine"):
-        # 1. Generate Income Process
-        rho = self.risk_params["rho"]
-        sigma_eps = self.risk_params["sigma_eps"]
-        n_z = self.risk_params["n_z"]
-        use_unemployment = self.risk_params.get("unemployment", False)
-
-        if use_unemployment and sigma_eps > 0.0 and n_z > 1:
-            # v1.7: Labor process with unemployment
-            from monad.process import build_labor_process
-            u_rate = self.risk_params.get("u_rate", 0.05)
-            replacement_rate = self.risk_params.get("replacement_rate", 0.4)
-            
-            z_grid, Pi, is_unemployed = build_labor_process(
-                rho, sigma_eps, n_z, u_rate, replacement_rate
-            )
-            n_z = len(z_grid)  # Now includes unemployment state
-            
-        elif sigma_eps > 0.0 and n_z > 1:
-            # Standard Rouwenhorst (no unemployment)
-            z_grid, Pi = rouwenhorst(rho, sigma_eps, n_z)
-        else:
-            # Deterministic / Representative Agent Fallback
-            z_grid = np.array([1.0])
-            Pi = np.array([[1.0]])
-            n_z = 1
-
-        # 2. Generate IR JSON
-        config_data = {
-            "model_name": self.name,
-            "parameters": self.params,
-            "agents": [{
-                "name": "Household",
-                "grids": { "asset_a": self.grid_config }
-            }],
-            "income_process": {
-                "n_z": n_z,
-                "z_grid": z_grid.tolist(),
-                "transition_matrix": Pi.flatten().tolist() # Flatten for Easy C++ Parse
-            }
-        }
-        
-        config_filename = "model_config.json"
-        with open(config_filename, "w") as f:
-            json.dump(config_data, f, indent=4)
-
-        # 3. Resolve Executable Path
-        if not os.path.exists(exe_path):
-             # Try seeking in standard build folders
-             candidates = [
-                 os.path.join("build_phase3", "Release", "MonadEngine.exe"),
-                 os.path.join("build_phase3", "MonadEngine.exe"),
-                 os.path.join(".", "MonadEngine.exe"),
-                 os.path.join("build", "Release", "MonadEngine.exe"),
-                 os.path.join("build", "MonadEngine.exe")
-             ]
-             for c in candidates:
-                 if c.endswith(".exe") and os.path.exists(c): # Windows Check
-                     exe_path = c
-                     break
-                 elif os.path.exists(c): # Linux/Mac without extension
-                     exe_path = c
-                     break
-             else:
-                 raise FileNotFoundError(f"Executable {exe_path} not found.")
-
-        print(f"Running {exe_path} with {config_filename}...")
-        
-        # 3. Run Engine
+        print(f"--- Monad Engine: Launching {self.binary_path} ---")
         try:
-            result = subprocess.run([exe_path, config_filename], capture_output=False, text=True)
-            
-            if result.returncode != 0:
-                print("--- Engine Output (stdout) ---")
-                print(result.stdout)
-                print("--- Engine Error (stderr) ---")
-                print(result.stderr)
-                raise RuntimeError("Engine execution failed.")
-            
+            # Run C++ executable
+            # Capture output to avoid cluttering python console unless error
+            result = subprocess.run(
+                [self.binary_path], 
+                cwd=self.working_dir,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("Engine finished successfully.")
             # print(result.stdout) # Uncomment for debug
+        except subprocess.CalledProcessError as e:
+            print("Engine Execution Failed!")
+            print(e.stderr)
+            raise RuntimeError("C++ Engine crashed.")
 
+        # Paths are relative to working_dir
+        path_R = os.path.join(self.working_dir, "gpu_jacobian_R.csv")
+        path_Z = os.path.join(self.working_dir, "gpu_jacobian_Z.csv")
+
+        print("--- Monad Lab: Loading Data ---")
+        return NKHANKSolver(path_R, path_Z)
+
+    def _update_config(self, config_path, params):
+        """
+        Reads existing config, updates params, writes back.
+        This assumes a simple flat structure or knows the schema.
+        Note: The C++ loader expects specific nesting. 
+        For v4.0 verification, we used a fixed `test_model.json`.
+        Here we implement a simple update if the JSON structure permits.
+        """
+        full_path = os.path.join(self.working_dir, config_path)
+        
+        try:
+            with open(full_path, 'r') as f:
+                data = json.load(f)
+            
+            # Update 'parameters' section
+            if 'parameters' not in data:
+                data['parameters'] = {}
+            
+            for k, v in params.items():
+                data['parameters'][k] = v
+                
+            with open(full_path, 'w') as f:
+                json.dump(data, f, indent=4)
+                
+            print(f"Configuration updated: {config_path}")
+            
         except Exception as e:
-            raise e
-
-        # 4. Load Results
-        results = {}
-        if os.path.exists("steady_state.csv"):
-            results["steady_state"] = pd.read_csv("steady_state.csv")
-            print("Loaded steady_state.csv")
-            
-        # v1.7: Prioritize NK transition file
-        if os.path.exists("transition_nk.csv"):
-            results["transition"] = pd.read_csv("transition_nk.csv")
-            print("Loaded transition_nk.csv")
-        elif os.path.exists("transition.csv"):
-            results["transition"] = pd.read_csv("transition.csv")
-            print("Loaded transition.csv")
-            
-        # v1.8: Load inequality path
-        if os.path.exists("inequality_path.csv"):
-            results["inequality"] = pd.read_csv("inequality_path.csv")
-            print("Loaded inequality_path.csv")
-            
-        return results
+            print(f"Warning: Failed to update config {config_path}: {e}")
+            print("Proceeding with existing configuration.")
