@@ -35,17 +35,60 @@ class MonadModel:
             )
             print("Engine finished successfully.")
             # print(result.stdout) # Uncomment for debug
-        except subprocess.CalledProcessError as e:
-            print("Engine Execution Failed!")
-            print(e.stderr)
-            raise RuntimeError("C++ Engine crashed.")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"Warning: Engine Execution Failed or not found ({e}).")
+            print("Switched to [Cache-based Analysis Mode].")
+            pass
 
         # Paths are relative to working_dir
         path_R = os.path.join(self.working_dir, "gpu_jacobian_R.csv")
         path_Z = os.path.join(self.working_dir, "gpu_jacobian_Z.csv")
 
-        print("--- Monad Lab: Loading Data ---")
-        return NKHANKSolver(path_R, path_Z)
+        if not os.path.exists(path_R) or not os.path.exists(path_Z):
+            raise RuntimeError("Critical Failure: No GPU hardware found AND no cached data available.\n"
+                               "To run Monad Engine, you need a CUDA GPU or pre-computed 'gpu_jacobian_*.csv' files.")
+        
+        if 'e' in locals():
+            print("\n" + "="*50)
+            print("[SAFE MODE]")
+            print("Engine execution failed.")
+            print("Using cached GPU-generated artifacts.")
+            print("="*50 + "\n")
+
+        # Config Loader for Solver Settings
+        # Re-read config (since params might have updated it, or we use defaults)
+        full_config_path = os.path.join(self.working_dir, config_path)
+        solver_config = {}
+        try:
+            with open(full_config_path, 'r') as f:
+                data = json.load(f)
+                solver_config = data.get('solver_settings', {})
+        except:
+            pass # Use defaults
+            
+        use_soe = solver_config.get('open_economy', False)
+        use_zlb = solver_config.get('zlb', False)
+        
+        print("--- Monad Lab: Initializing Solver Stack ---")
+        print(f"  > Open Economy: {'ON' if use_soe else 'OFF'}")
+        print(f"  > Nonlinear ZLB: {'ON' if use_zlb else 'OFF'}")
+
+        # Factory Logic
+        from .solver import NKHANKSolver, SOESolver
+        from .nonlinear import NewtonSolver
+
+        if use_soe:
+            # Base is Open Economy
+            base_solver = SOESolver(path_R, path_Z)
+        else:
+            # Base is Standard Closed Economy (Default)
+            base_solver = NKHANKSolver(path_R, path_Z)
+            
+        if use_zlb:
+            # Wrap in Nonlinear Solver
+            return NewtonSolver(base_solver)
+        else:
+            return base_solver
 
     def _update_config(self, config_path, params):
         """

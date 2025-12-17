@@ -9,6 +9,10 @@
         "m_min": 0.0,
         "test_gpu_jacobian": 1.0
     },
+    "solver_settings": {
+        "open_economy": false,
+        "zlb": false
+    },
     "income_process": {
         "n_z": 2,
         "z_grid": [

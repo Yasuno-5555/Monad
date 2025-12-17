@@ -2,6 +2,8 @@
 > **Global Nonlinear Solver:** Newton-Raphson on Sequence Space.
 > **Constraints:** Zero Lower Bound (ZLB) & Consumption-Export Disconnect.
 > **Result:** Successfully simulated the "Export-led Recession" under Liquidity Trap conditions.
+>
+> **Note:** GPU is required for generating Jacobians. CPU-only environments can analyze cached results only.
 
 ![Project Izanagi](experiments/project_izanagi.png)
 
