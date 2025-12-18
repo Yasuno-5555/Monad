@@ -2,15 +2,44 @@ import numpy as np
 from .core import GPUBackend
 from .blocks import NKBlock
 
+# Try to import C++ backend
+try:
+    from .cpp_backend import CppBackend, is_cpp_available
+    _CPP_AVAILABLE = is_cpp_available()
+except ImportError:
+    _CPP_AVAILABLE = False
+    CppBackend = None
+
 class NKHANKSolver:
     """
     General Equilibrium Solver for the Monad Engine.
     Assembles GPU micro-Jacobians and analytical macro-blocks.
+    Supports both HANK (two_asset) and RANK (one_asset) models.
     """
-    def __init__(self, path_R, path_Z, T=50, params=None):
-        # 1. Initialize Infrastructure
-        self.backend = GPUBackend(path_R, path_Z, T)
+    def __init__(self, path_R=None, path_Z=None, T=50, params=None, model_type="two_asset"):
+        """
+        Args:
+            path_R: Path to interest rate Jacobian CSV (for fallback).
+            path_Z: Path to income Jacobian CSV (for fallback).
+            T: Time horizon.
+            params: Model parameters dict.
+            model_type: "two_asset" (HANK) or "one_asset" (RANK).
+        """
         self.T = T
+        self.model_type = model_type
+        
+        # 1. Initialize Infrastructure
+        # Try C++ backend first, fallback to CSV
+        if _CPP_AVAILABLE:
+            try:
+                self.backend = CppBackend(T=T, model_type=model_type, params=params)
+                self.backend.compute_jacobians()
+                print(f"[Solver] Using C++ backend ({model_type})")
+            except Exception as e:
+                print(f"[Solver] C++ backend failed: {e}, falling back to CSV")
+                self.backend = GPUBackend(path_R, path_Z, T)
+        else:
+            self.backend = GPUBackend(path_R, path_Z, T)
         
         # 2. Initialize Theory
         # Default params if none provided
@@ -62,8 +91,8 @@ class SOESolver(NKHANKSolver):
     Small Open Economy HANK Solver.
     Extends the closed economy solver with Exchange Rate and Trade Balance channels.
     """
-    def __init__(self, path_R, path_Z, T=50, params=None):
-        super().__init__(path_R, path_Z, T, params)
+    def __init__(self, path_R=None, path_Z=None, T=50, params=None, model_type="two_asset"):
+        super().__init__(path_R, path_Z, T, params, model_type)
         # alpha: Import share (0.4 means 40% of basket is foreign)
         # chi:   Trade elasticity (how much NX responds to Q)
         self.alpha = params.get('alpha', 0.4) if params else 0.4

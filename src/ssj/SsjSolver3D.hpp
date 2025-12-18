@@ -8,6 +8,7 @@
 #include "JacobianBuilder3D.hpp"
 #include "FakeNewsAggregator.hpp"
 #include "../grid/MultiDimGrid.hpp"
+#include "../kernel/TwoAssetKernel.hpp"
 #include "../Params.hpp"
 
 namespace Monad {
