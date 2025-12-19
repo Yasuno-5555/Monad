@@ -21,7 +21,13 @@ class NewtonSolver:
         self.T = linear_solver.T
         self.damping = damping  # Can be overridden after construction
         self.zlb_enabled = True  # Default: ZLB ON, can be overridden
-        self.model_type = "two_asset"  # Default: HANK, can be "one_asset" for RANK
+        self.model_type = "two_asset"
+        
+        # v2.5: Regime Manager (Replaces hardcoded ZLB)
+        from .regime import RegimeManager, ZLB_Regime
+        self.regimes = RegimeManager()
+        if self.zlb_enabled:
+            self.regimes.add(ZLB_Regime())
 
     def solve_nonlinear(self, shock_path, initial_guess_path=None):
         """
@@ -149,14 +155,10 @@ class NewtonSolver:
         
         target_i_level = r_ss + shock_r_star + phi * pi_path
         
-        # Apply ZLB constraint only if enabled
-        if self.zlb_enabled:
-            actual_i_level = np.maximum(0.0, target_i_level)
-            is_at_zlb = (actual_i_level <= 1e-6)
-        else:
-            # No ZLB: interest rate can go negative
-            actual_i_level = target_i_level
-            is_at_zlb = np.zeros(self.T, dtype=bool)  # Never at ZLB
+        target_i_level = r_ss + shock_r_star + phi * pi_path
+        
+        # Apply Regimes (e.g. ZLB)
+        actual_i_level, is_at_zlb = self.regimes.evaluate(target_i_level, "i")
         
         di_path = actual_i_level - r_ss
         

@@ -3,6 +3,25 @@ import subprocess
 import json
 from .solver import NKHANKSolver
 
+class ModelObject:
+    """Helper to mutate model components."""
+    def __init__(self, name, parent):
+        self.name = name
+        self.parent = parent
+    
+    def mutate(self, **kwargs):
+        self.parent._log_change(self.name, kwargs)
+        if self.name == "solver":
+            for k, v in kwargs.items():
+                self.parent.overrides[f"solver_settings.{k}"] = v
+        else:
+            self.parent.overrides.update(kwargs)
+        return self.parent # Return parent model to allow chaining objects: m.object(A).mutate().object(B)...
+
+    def toggle(self, feature):
+        self.mutate(**{feature: True})
+        return self.parent
+
 class MonadModel:
     """
     High-level wrapper for the Monad Engine.
@@ -11,6 +30,34 @@ class MonadModel:
     def __init__(self, binary_path, working_dir="."):
         self.binary_path = binary_path
         self.working_dir = working_dir
+        self.objects = {
+            "policy_rule":  ModelObject("policy_rule", self),
+            "fiscal_rule":  ModelObject("fiscal_rule", self),
+            "household":    ModelObject("household", self),
+            "market":       ModelObject("market", self),
+            "solver":       ModelObject("solver", self)
+        }
+        self.overrides = {}
+        self.history_log = []
+
+    def _log_change(self, obj_name, changes):
+        """Record a mutation event."""
+        event = {
+            "object": obj_name,
+            "changes": changes,
+            "step": len(self.history_log) + 1
+        }
+        self.history_log.append(event)
+
+    def history(self):
+        """Print the mutation history."""
+        print("--- Model Mutation History ---")
+        for h in self.history_log:
+            print(f"[{h['step']}] {h['object']}: {h['changes']}")
+        return self.history_log
+
+    def object(self, name):
+        return self.objects.get(name)
 
     def run(self, params=None, config_path="test_model.json"):
         """
@@ -19,8 +66,13 @@ class MonadModel:
         2. Runs C++ Engine.
         3. Initializes and returns NKHANKSolver.
         """
+        # Merge manual params with overrides
+        combined_params = self.overrides.copy()
         if params:
-            self._update_config(config_path, params)
+            combined_params.update(params)
+
+        if combined_params:
+            self._update_config(config_path, combined_params)
 
         print(f"--- Monad Engine: Launching {self.binary_path} ---")
         try:

@@ -10,6 +10,34 @@ It unifies the workflow of setting up, shocking, solving, and comparing heteroge
 *   **Auto-Solver Selection**: Monad automatically chooses between Linear SSJ, Newton, or Piecewise solvers based on your simulation context (e.g., ZLB).
 *   **Credibility**: Every result carries a reproducibility fingerprint and metadata sidecar.
 
+## The 10-Line "Killer" Demo
+
+Evaluate policy counterfactuals and their welfare implications in seconds:
+
+```python
+from monad.model import MonadModel
+from monad.welfare import WelfareResult
+
+# 1. Base Model
+m = MonadModel("bin/MonadEngine")
+base = m.run()
+
+# 2. Counterfactual: Weak Policy + ZLB Crisis
+alt = (
+    m.object("policy_rule").mutate(phi=0.8)
+     .object("solver").toggle("zlb")
+     .run()
+)
+
+# 3. Decision: Is the new policy better? (Consumption Equivalent Variation)
+WelfareResult(alt).compare(WelfareResult(base))
+```
+
+This single block demonstrates:
+1.  **Fluent Mutation**: `mutate()`, `toggle()`
+2.  **Structural Change**: Switching regimes (ZLB) and parameters on the fly.
+3.  **Normative Analysis**: Directly computing welfare losses.
+
 ## Quick Start
 ```bash
 pip install monad  # (Hypothetical)
