@@ -19,6 +19,9 @@ struct TwoAssetParam {
     
     // v2.1 Fiscal
     FiscalBlock::FiscalPolicy fiscal;
+    
+    // v3.0 Compute Config
+    bool use_gpu = true;
 };
 
 struct TwoAssetPolicy {

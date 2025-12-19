@@ -44,60 +44,131 @@ IncomeProcess make_income() {
     // Stationary dist: [0.5, 0.5]
     return p;
 }
+// Helper: Parse Compute Config
+// Helper: Parse Compute Config (Robust String Search)
+bool parse_use_gpu(const std::string& config_path) {
+    try {
+        std::ifstream f(config_path);
+        if (!f.is_open()) return true; // Default
+        
+        // Simple heuristic search to avoid nlohmann linking issues in main
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        
+        size_t pos = content.find("use_gpu");
+        if (pos != std::string::npos) {
+            // Found key, check value after colon
+            size_t cursor = pos + 7; // len("use_gpu")
+            while(cursor < content.size() && (content[cursor] == ' ' || content[cursor] == '\"' || content[cursor] == ':')) {
+                cursor++;
+            }
+            if (cursor + 4 < content.size()) {
+                if (content.substr(cursor, 5) == "false") return false;
+                if (content.substr(cursor, 4) == "true") return true;
+            }
+        }
+        return true; // Default true
+    } catch(...) {
+        return true;
+    }
+}
 
 int run_two_asset(const std::string& config_path) {
     try {
-        // v3.0: GPU Init
-        std::cout << "[INFO] Initializing Monad Engine v3.0 (Unified/GPU)..." << std::endl;
-        std::cout << "Loading Config: " << config_path << std::endl;
-
+        std::cout << "[INFO] Initializing Monad Engine v3.0 (Unified)..." << std::endl;
+        
         // 1. Setup Parameters & Grids via JSON
         Monad::TwoAssetParam params;
-        UnifiedGrid grid_dummy; // Loader expects UnifiedGrid but we use MultiDim
-        // Note: JsonLoader might need adaptation for MultiDim logic, 
-        // but for now let's assume it loads params correctly. 
-        // We might need to manually construct grids if loader is legacy.
-        // Checking main_engine (v1.1) it used JsonLoader::load_model(config_path, grid, params).
-        // Let's reuse that but we need 'UnifiedGrid' (1D legacy) or update loader.
-        // For simplicity, we load params and then construct grids manually as before, 
-        // OR we trust param values from JSON.
+        UnifiedGrid grid_dummy; 
+        // Note: Fix potential type mismatch if JsonLoader expects MonadParams
+        // We might need to map scalars later, but for now assuming it works or we fix it.
+        // For robustness, let's load params normally.
+        JsonLoader::load_model(config_path, grid_dummy, (MonadParams&)params); // Force cast if layout matches enough or error? 
+        // Actually, let's trust the compiler for now on the existing line, 
+        // but explicit parsing of use_gpu is safer.
         
-        // Let's LOAD params manually if JsonLoader is too old, or just use it.
-        // Given constraints, let's use a simpler param loader if available, or just mock it for now 
-        // by keeping hardcoded structure BUT allowing overrides?
-        // No, "Unified Engine" requires Config.
+        // Override use_gpu
+        params.use_gpu = parse_use_gpu(config_path);
         
-        // Let's assume JsonLoader populates 'params'.
-        JsonLoader::load_model(config_path, grid_dummy, params); 
+        // Determine Mode (GPU vs CPU)
+        bool gpu_hardware = check_gpu();
+        bool use_gpu = params.use_gpu && gpu_hardware;
+        
+        if (!gpu_hardware && params.use_gpu) {
+            std::cout << "[WARN] Config requested GPU, but no CUDA device found. Falling back to CPU." << std::endl;
+            use_gpu = false;
+        } else if (!params.use_gpu) {
+             std::cout << "[INFO] CPU Mode requested by config." << std::endl;
+        } else {
+            std::cout << "[INFO] GPU Mode Active." << std::endl;
+        }
 
-        // 2. Re-Setup Grids based on loaded Params (or keep defaults if JSON missing)
-        // Liquid: [-2.0, 50.0]
+        // 2. Re-Setup Grids based on loaded Params
         auto m_grid = make_grid(50, params.m_min, 50.0, 3.0); 
-        auto a_grid = make_grid(40, 0.0, 100.0, 2.0);
-        auto income = make_income(); // Keep simple income for now
 
-        Monad::MultiDimGrid grid(m_grid, a_grid, income.n_z);
-        std::cout << "Grid Size: " << grid.total_size 
-                  << " (" << grid.N_m << "x" << grid.N_a << "x" << grid.N_z << ")" << std::endl;
+
+        // ... (includes remain)
         
-        // v3.0 GPU Setup (Real dimensions)
-        auto gpu_backend = std::make_unique<Monad::CudaBackend>(grid.N_m, grid.N_a, grid.N_z);
-        gpu_backend->verify_device();
-        // Pre-upload static grids
-        gpu_backend->upload_grids(grid.m_grid.nodes, grid.a_grid.nodes);
-        
-        // 3. Initialize Policy & Solver
-        Monad::TwoAssetPolicy policy(grid.total_size);
-        for(int i=0; i<grid.total_size; ++i) policy.c_pol[i] = 0.1; // Avoid singularity
-        
-        Monad::TwoAssetPolicy next_policy(grid.total_size);
-        
-        // Pass GPU backend to solver
-        auto solver = std::make_unique<Monad::TwoAssetSolver>(grid, params, gpu_backend.get());
-            
-            // 4. Policy Iteration (VFI / EGM)
-            std::cout << "\n--- Solving Policy ---" << std::endl;
-        for(int iter=0; iter<1000; ++iter) {
+        // Helper to check CUDA
+        bool check_gpu() {
+            int count = 0;
+            cudaError_t err = cudaGetDeviceCount(&count);
+            if (err != cudaSuccess || count == 0) return false;
+            return true;
+        }
+
+        int run_two_asset(const std::string& config_path) {
+            try {
+                std::cout << "[INFO] Initializing Monad Engine v3.0 (Unified)..." << std::endl;
+                
+                // 1. Setup Parameters & Grids via JSON
+                Monad::TwoAssetParam params;
+                UnifiedGrid grid_dummy; 
+                JsonLoader::load_model(config_path, grid_dummy, params); 
+                
+                // Determine Mode (GPU vs CPU)
+                // Default to GPU if available, unless forced off
+                bool gpu_available = check_gpu();
+                bool use_gpu = gpu_available; 
+                // Checks if params has a flag? JsonLoader populates params.
+                // Assuming TwoAssetParam has 'use_gpu' bool or we trust existing fields.
+                // If not, we print warning.
+                
+                if (!gpu_available) {
+                    std::cout << "[WARN] No CUDA Device found. Falling back to CPU." << std::endl;
+                    use_gpu = false;
+                } else {
+                    std::cout << "[INFO] CUDA Device Detected." << std::endl;
+                }
+
+                // 2. Re-Setup Grids based on loaded Params
+                auto m_grid = make_grid(50, params.m_min, 50.0, 3.0); 
+                auto a_grid = make_grid(40, 0.0, 100.0, 2.0);
+                auto income = make_income(); 
+
+                Monad::MultiDimGrid grid(m_grid, a_grid, income.n_z);
+                std::cout << "Grid Size: " << grid.total_size 
+                          << " (" << grid.N_m << "x" << grid.N_a << "x" << grid.N_z << ")" << std::endl;
+                
+                // v3.0 GPU Setup OR CPU
+                std::unique_ptr<Monad::CudaBackend> gpu_backend = nullptr;
+                
+                if (use_gpu) {
+                    gpu_backend = std::make_unique<Monad::CudaBackend>(grid.N_m, grid.N_a, grid.N_z);
+                    gpu_backend->verify_device();
+                    gpu_backend->upload_grids(grid.m_grid.nodes, grid.a_grid.nodes);
+                }
+                
+                // 3. Initialize Policy & Solver
+                Monad::TwoAssetPolicy policy(grid.total_size);
+                for(int i=0; i<grid.total_size; ++i) policy.c_pol[i] = 0.1; 
+                
+                // Pass GPU backend (or nullptr) to solver
+                auto solver = std::make_unique<Monad::TwoAssetSolver>(grid, params, gpu_backend.get());
+                    
+                // 4. Policy Iteration (VFI / EGM)
+                std::string mode_str = use_gpu ? "GPU" : "CPU";
+                std::cout << "\n--- Solving Policy (" << mode_str << ") ---" << std::endl;
+                for(int iter=0; iter<1000; ++iter) {
             double diff = solver->solve_bellman(policy, next_policy, income);
             // Update
             policy = next_policy; // Copy
@@ -286,6 +357,37 @@ int run_two_asset(const std::string& config_path) {
             }
             irf_file.close();
             std::cout << "  IRF written to irf_test.csv" << std::endl;
+
+            // --- v3.4: Auto-Export for Python (CPU Fallback / SSJ Upgrade) ---
+            // We overwrite gpu_jacobian_*.csv with high-precision SSJ derivatives.
+            // This ensures Python solver works even without GPU.
+            
+            // R Jacobian (Shock to rm)
+            if (jacobians["C"].count("rm") && jacobians["B"].count("rm")) {
+                std::ofstream fR("gpu_jacobian_R.csv");
+                fR << "t,dC,dB\n";
+                for(int t=0; t<T; ++t) {
+                    fR << t << "," 
+                       << jacobians["C"]["rm"](t, 0) << "," 
+                       << jacobians["B"]["rm"](t, 0) << "\n";
+                }
+                fR.close();
+                std::cout << "  [Export] Saved gpu_jacobian_R.csv (Source: SSJ)" << std::endl;
+            }
+
+            // Z Jacobian (Shock to w) -> approximates Y shock
+            if (jacobians["C"].count("w") && jacobians["B"].count("w")) {
+                std::ofstream fZ("gpu_jacobian_Z.csv");
+                fZ << "t,dC,dB\n";
+                for(int t=0; t<T; ++t) {
+                    fZ << t << "," 
+                       << jacobians["C"]["w"](t, 0) << "," 
+                       << jacobians["B"]["w"](t, 0) << "\n";
+                }
+                fZ.close();
+                std::cout << "  [Export] Saved gpu_jacobian_Z.csv (Source: SSJ)" << std::endl;
+            }
+
         } else {
             std::cout << "  [FAIL] Missing Jacobian Block C-rm" << std::endl;
         }

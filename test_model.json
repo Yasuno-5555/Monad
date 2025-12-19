@@ -1,8 +1,14 @@
 {
     "parameters": {
         "test_run": true,
-        "n_assets": 3,
-        "has_belief": true,
-        "crypto": true
+        "n_assets": 2,
+        "has_belief": false,
+        "crypto": true,
+        "phi_pi": 1.5,
+        "zlb": true,
+        "kappa": 0.1,
+        "agent_type": "HANK",
+        "eis": 0.5,
+        "beta": 0.986
     }
 }
