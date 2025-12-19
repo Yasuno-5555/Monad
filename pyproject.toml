@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monad-econ"
+version = "1.0.0"
+description = "A thinking library for macroeconomic models (HANK/RANK/NK)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Monad Team", email = "monad@example.com"}
+]
+keywords = [
+    "economics",
+    "macroeconomics",
+    "HANK",
+    "RANK",
+    "New Keynesian",
+    "heterogeneous agents",
+    "monetary policy",
+    "fiscal policy",
+    "sequence space jacobian",
+    "welfare analysis"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis"
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "matplotlib>=3.4",
+    "pandas>=1.3"
+]
+
+[project.optional-dependencies]
+gpu = [
+    "cupy>=10.0"
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "black>=22.0",
+    "isort>=5.0",
+    "mypy>=0.950"
+]
+docs = [
+    "sphinx>=4.0",
+    "sphinx-rtd-theme>=1.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/monad-econ/monad"
+Documentation = "https://monad-econ.readthedocs.io"
+Repository = "https://github.com/monad-econ/monad"
+Changelog = "https://github.com/monad-econ/monad/blob/main/CHANGELOG.md"
+
+[project.scripts]
+monad = "monad.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["monad*"]
+exclude = ["tests*", "examples*", "experiments*", "3rdparty*"]
+
+[tool.setuptools.package-data]
+monad = ["*.json", "*.csv", "*.pyd"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

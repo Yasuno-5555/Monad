@@ -39,9 +39,20 @@ This single block demonstrates:
 3.  **Normative Analysis**: Directly computing welfare losses.
 
 ## Quick Start
+
+### Installation
+
 ```bash
-pip install monad  # (Hypothetical)
+# From PyPI (when published)
+pip install monad-econ
+
+# From source (development)
+git clone https://github.com/monad-econ/monad.git
+cd monad
+pip install -e ".[dev]"
 ```
+
+### Basic Usage
 
 Run a standard US calibration with a monetary shock:
 
@@ -77,7 +88,27 @@ See `examples/canonical/` for clean, copy-pasteable patterns.
 | [determinacy_fail.py](examples/canonical/determinacy_fail.py) | **Diagnosis**, identifying when policies violate stability. |
 | [reproducible_figure.py](examples/canonical/reproducible_figure.py) | **Science**, exporting evidence with fingerprints. |
 
-## Credibility & Determinacy
+## Policy-as-Object (Phase 2)
+
+Monad treats **policy rules as first-class objects** with internal state and learning capabilities.
+
+```python
+from monad.policy import Rules
+
+# Create a Central Bank with Learning
+fed = Rules.InertialTaylor(phi_pi=1.5, rho=0.8, name="Fed")
+fed.learns("r_star", gain=0.05)  # CB learns the natural rate
+
+# Attach to Model and Solve
+m.attach(fed)
+res = m.run(diff_inputs={"markup": 0.05})
+
+# Inspect CB's Belief Path
+print(res['Fed_r_star_belief'])
+```
+
+**Killer Demo 2** (`examples/killer_demo_2.py`) demonstrates the 1970s "Great Inflation" logic: how a Central Bank's misperception of `r*` can turn a temporary shock into persistent inflation.
+
 
 Monad acts as a consultant, diagnosing the stability of your model.
 

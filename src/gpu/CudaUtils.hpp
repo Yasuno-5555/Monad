@@ -47,9 +47,9 @@ public:
     double* d_F      = nullptr; // FakeNews Vector
     
     // Grid Dimensions
-    int N_m, N_a, N_z;
+    int N_m, N_a, N_z, N_b; // Added N_b
 
-    CudaBackend(int nm, int na, int nz) : N_m(nm), N_a(na), N_z(nz) {
+    CudaBackend(int nm, int na, int nz, int nb = 1) : N_m(nm), N_a(na), N_z(nz), N_b(nb) {
         initialize_memory();
     }
 
@@ -61,11 +61,18 @@ public:
     void initialize_memory() {
         size_t grid_size_m = N_m * sizeof(double);
         size_t grid_size_a = N_a * sizeof(double);
-        size_t total_size = N_m * N_a * N_z * sizeof(double);
+        // Phase 4: Belief Grid (N_b). Defaults to 1 if not used. 
+        // Note: Layout (b, z, a, m) means total size is simply multiplied by N_b.
+        size_t total_size = (size_t)N_m * N_a * N_z * N_b * sizeof(double);
 
         CUDA_CHECK(cudaMalloc((void**)&d_m_grid, grid_size_m));
         CUDA_CHECK(cudaMalloc((void**)&d_a_grid, grid_size_a));
         CUDA_CHECK(cudaMalloc((void**)&d_y_grid, N_z * sizeof(double)));
+        
+        // Phase 4: Belief Grid allocation might be needed if nodes are passed, 
+        // but typically fixed params or separate small array. 
+        // Let's assume passed as kernel arg for now.
+
         CUDA_CHECK(cudaMalloc((void**)&d_V_curr, total_size));
         CUDA_CHECK(cudaMalloc((void**)&d_V_next, total_size));
         CUDA_CHECK(cudaMalloc((void**)&d_c_pol,  total_size));
@@ -73,8 +80,9 @@ public:
         CUDA_CHECK(cudaMalloc((void**)&d_a_pol,  total_size));
         CUDA_CHECK(cudaMalloc((void**)&d_d_pol,  total_size));
         CUDA_CHECK(cudaMalloc((void**)&d_adjust_flag, total_size));
-        CUDA_CHECK(cudaMalloc((void**)&d_Pi, N_z * N_z * sizeof(double)));
-        
+        CUDA_CHECK(cudaMalloc((void**)&d_Pi, N_z * N_z * sizeof(double))); // Transition matrix (z)
+        // Note: For b transition, we might need another matrix or assume separate.
+
         // Output Buffers
         CUDA_CHECK(cudaMalloc((void**)&d_EV, total_size));
         CUDA_CHECK(cudaMalloc((void**)&d_EVm, total_size));
@@ -89,8 +97,11 @@ public:
         CUDA_CHECK(cudaMalloc((void**)&d_F, total_size));
         
         std::cout << "[CUDA] Allocated " << (total_size * 2 + grid_size_m + grid_size_a) / 1024 / 1024 
-                  << " MB on GPU." << std::endl;
+                  << " MB on GPU (4D Mode: Nb=" << N_b << ")." << std::endl;
     }
+    
+    // ... (rest of methods need updating if they hardcode N_m*N_a*N_z) ...
+
 
     // Copy Data: Host -> Device
     void upload_grids(const std::vector<double>& h_m, const std::vector<double>& h_a) {

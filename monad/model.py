@@ -39,6 +39,38 @@ class MonadModel:
         }
         self.overrides = {}
         self.history_log = []
+        self.policy_block = None
+
+    def attach(self, policy_block):
+        """
+        Inject a Policy Object (Phase 2).
+        1. Registers new variables (Superset Strategy).
+        2. Applies overrides.
+        """
+        # 1. Variable Injection (Mock for now, normally affects DAG)
+        new_vars, new_eqs = policy_block.export()
+        if new_vars:
+            self._log_change("system", {"new_vars": list(new_vars.keys())})
+        if new_eqs:
+            # Here we would normally "inject" into the DAG builder
+            print(f"[MonadModel] Injecting {len(new_eqs)} equations from Policy.")
+            # For verification test, let's store them in a temp attribute if not existing
+            if not hasattr(self, 'injected_equations'):
+                self.injected_equations = {}
+            self.injected_equations.update(new_eqs)
+            
+        # 2. Apply Parameter Overrides immediately
+        overrides = policy_block.get_overrides()
+        if overrides:
+            self.overrides.update(overrides)
+            
+        self.policy_block = policy_block
+        self._log_change("policy", {"attached": policy_block.name})
+        
+        # Link for live mutation updates
+        policy_block.link_to_model(self)
+        
+        return self
 
     def _log_change(self, obj_name, changes):
         """Record a mutation event."""
@@ -59,12 +91,12 @@ class MonadModel:
     def object(self, name):
         return self.objects.get(name)
 
-    def run(self, params=None, config_path="test_model.json"):
+    def run(self, params=None, config_path="test_model.json", diff_inputs=None):
         """
         Executes the full pipeline.
         1. Updates JSON configuration (if params provided).
         2. Runs C++ Engine.
-        3. Initializes and returns NKHANKSolver.
+        3. Initializes and returns NKHANKSolver (or Result if diff_inputs provided).
         """
         # Merge manual params with overrides
         combined_params = self.overrides.copy()
@@ -121,13 +153,17 @@ class MonadModel:
         use_soe = solver_config.get('open_economy', False)
         use_zlb = solver_config.get('zlb', False)
         
+        # Policy Object FORCE (Phase 2)
+        if self.policy_block:
+             use_zlb = True # Force PiecewiseSolver if policy object attached
+        
         print("--- Monad Lab: Initializing Solver Stack ---")
         print(f"  > Open Economy: {'ON' if use_soe else 'OFF'}")
-        print(f"  > Nonlinear ZLB: {'ON' if use_zlb else 'OFF'}")
+        print(f"  > Nonlinear/Policy: {'ON' if use_zlb else 'OFF'}")
 
         # Factory Logic
         from .solver import NKHANKSolver, SOESolver
-        from .nonlinear import NewtonSolver
+        from .nonlinear import PiecewiseSolver
 
         if use_soe:
             # Base is Open Economy
@@ -138,8 +174,14 @@ class MonadModel:
             
         if use_zlb:
             # Wrap in Nonlinear Solver
-            return NewtonSolver(base_solver)
+            # Pass policy block if relevant
+            solver = PiecewiseSolver(base_solver, policy_block=self.policy_block)
+            if diff_inputs:
+                return solver.solve(diff_inputs)
+            return solver
         else:
+            if diff_inputs:
+                return base_solver.solve(diff_inputs)
             return base_solver
 
     def _update_config(self, config_path, params):

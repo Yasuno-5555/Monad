@@ -11,7 +11,7 @@
         "name": "US Normal Scenario",
         "T": 40,
         "kappa": 0.1,
-        "phi_pi": 0.8,
+        "phi_pi": 1.5,
         "open_economy": false,
         "type": "dsge_perfect_foresight",
         "description": "Standard calibration (r* 2.0%) representing a normal economy with sufficient policy space and standard dynamics.",
@@ -74,7 +74,9 @@
             }
         ],
         "rho_r": 0.8,
-        "r_star": 0.02
+        "r_star": 0.02,
+        "rho": 0.8,
+        "gain": 0.05
     },
     "solver_settings": {
         "open_economy": false,

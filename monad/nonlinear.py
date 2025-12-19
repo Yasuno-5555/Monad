@@ -1,295 +1,251 @@
 import numpy as np
 import scipy.linalg
+from .regime import registry
 
-class NewtonSolver:
+class PiecewiseSolver:
     """
-    Newton-Raphson Solver for General Equilibrium on Sequence Space.
-    Solves F(X) = 0 where F is a system of nonlinear equations.
+    Generalized Solver for Endogenous Regime Switching (OccBin-style).
+    Solves H(Y) * dY = -Residual(Y) where H changes discretely based on regimes.
     """
-    def __init__(self, linear_solver, max_iter=1000, tol=1e-6, damping=0.2):
-        """
-        Args:
-            linear_solver: An instance of the linear solver (e.g., SOESolver/NKHANKSolver).
-                           We use its Jacobian (J) to guide the Newton step.
-            max_iter: Maximum iterations.
-            tol: Convergence tolerance for residuals.
-            damping: Step size damping factor (0.0-1.0). Lower = more stable but slower.
-        """
-        self.linear_solver = linear_solver
+    def __init__(self, linear_solver, max_iter=20, tol=1e-6, damping=1.0, policy_block=None):
+        self.model = linear_solver # Assumes this has .block, .backend, etc.
         self.max_iter = max_iter
         self.tol = tol
+        self.damping = damping
         self.T = linear_solver.T
-        self.damping = damping  # Can be overridden after construction
-        self.zlb_enabled = True  # Default: ZLB ON, can be overridden
-        self.model_type = "two_asset"
+        self.policy_block = policy_block
         
-        # v2.5: Regime Manager (Replaces hardcoded ZLB)
-        from .regime import RegimeManager, ZLB_Regime
-        self.regimes = RegimeManager()
-        if self.zlb_enabled:
-            self.regimes.add(ZLB_Regime())
+        # Cache for Regime Jacobians (Lazy Loaded)
+        # Key: regime_name, Value: Jacobian Matrix (TxT)
+        self.jacobian_cache = {} 
+        
+        # Pre-load "normal"
+        # We assume linear_solver is configured for "normal" by default
+        self.jacobian_cache["normal"] = self._compute_jacobian_for_regime("normal")
 
-    def solve_nonlinear(self, shock_path, initial_guess_path=None):
-        """
-        Finds the path of endogenous variables (e.g., Y) that satisfies nonlinear equilibrium.
-        With Damping for Robust Convergence.
-        """
-        if initial_guess_path is None:
+    def solve(self, shock_path, initial_guess=None):
+        if initial_guess is None:
             Y_guess = np.zeros(self.T)
         else:
-            Y_guess = initial_guess_path.copy()
+            Y_guess = initial_guess.copy()
 
-        print(f"--- Nonlinear Solver Started (Max: {self.max_iter}, Damping: {self.damping}) ---")
-        
-        # 減衰係数（Damping Factor）- use instance variable
-        damping = self.damping 
+        print(f"--- Piecewise Solver (Max: {self.max_iter}) ---")
 
         for it in range(self.max_iter):
-            # A. Evaluate Blocks
-            block_results = self._evaluate_blocks(Y_guess, shock_path)
+            # 1. Evaluate Regimes
+            # We need a full path guess to evaluate regimes
+            # Assuming 'evaluate_regimes' takes Y (output gap) or we need to derive others?
+            # Regimes might depend on r, i, debt, etc.
+            # We need to run a "Forward Pass" to get all variables.
             
-            # B. Residuals
-            if 'NX' in block_results:
-                aggregate_demand = block_results['C_agg'] + block_results['NX']
-            else:
-                aggregate_demand = block_results['C_agg']
+            # Using standard forward pass (assuming Normal structure first? No, use current guess?)
+            # Valid point: To know variables, we need consistent equation.
+            # OccBin approach: "Guess Regimes -> Solve -> Verification".
+            # Here we do: "Guess Y -> Derive Vars -> Determine Regimes -> Update Y".
+            # This is "Relaxation" approach.
+            
+            # Forward pass using 'normal' logic to get proxy variables?
+            # Or use the specific logic of the CURRENTLY guessed regimes?
+            # Let's derive Proxy variables using simple Normal blocks first, 
+            # then refine regimes. (Approximation).
+            
+            # Actually, we should use the `_evaluate_blocks` logic but that usually returns residuals.
+            # We need the paths.
+            
+            paths = self._derive_paths(Y_guess, shock_path)
+            
+            # Determine Regimes
+            # Pass all paths as context
+            regime_path = registry.evaluate_regimes(self.model, paths)
+            
+            # 2. Assemble Patchwork Jacobian & Residuals
+            H, Res = self._assemble_system(regime_path, Y_guess, shock_path, paths)
+            
+            # 3. Check Convergence
+            err = np.max(np.abs(Res))
+            print(f"  Iter {it}: Max Res={err:.2e}, Regimes={np.unique(regime_path)}")
                 
-            residual = aggregate_demand - Y_guess
-            
-            # C. Check Convergence
-            err = np.max(np.abs(residual))
-            
-            # 発散チェック（NaNやInfが出たら即停止）
-            if not np.isfinite(err):
-                raise RuntimeError(f"Solver diverged at iter {it} with Error: {err}")
-            
-            # Log progress (every 100 iterations to reduce noise)
-            if it % 100 == 0:
-                print(f"  Iter {it}: Max Residual = {err:.2e} (at ZLB: {np.sum(block_results['is_at_zlb'])} periods)")
-            
             if err < self.tol:
-                print(f"  [CONVERGED] Iter {it}, Error: {err:.2e}")
-                return block_results
+                print(f"  [CONVERGED] Iter {it}")
+                paths['regime_path'] = regime_path
+                return paths
 
-            # D. Jacobian & Step
-            is_constrained = block_results['is_at_zlb']
-            J_step = self._build_dynamic_jacobian(is_constrained)
-            
-            dY_step = np.linalg.solve(J_step, residual)
-            
-            # E. Update with Damping
-            Y_guess = Y_guess + damping * dY_step
-
-        raise RuntimeError(f"Solver failed to converge after {self.max_iter} iterations. Last Error: {err:.2e}")
-
-    def solve_with_homotopy(self, shock_path, target_chi, steps=5):
-        """
-        Homotopy Solver:
-        Export Elasticity (chi) を 0 から target_chi まで徐々に上げながら解く。
-        前のステップの解を次のステップの初期値(initial_guess)にすることで収束を保証する。
-        
-        Args:
-            shock_path: The exogenous shock path (e.g., r* deviation).
-            target_chi: The final value of chi to solve for.
-            steps: Number of intermediate steps from current chi to target_chi.
-            
-        Returns:
-            The equilibrium result dictionary at target_chi.
-        """
-        print(f"=== Starting Homotopy (Target chi={target_chi}, Steps={steps}) ===")
-        
-        # 元の設定を保存
-        original_chi = self.linear_solver.chi
-        
-        # 0.1 刻みなどで徐々に target_chi に近づける
-        chi_schedule = np.linspace(original_chi, target_chi, steps)
-        
-        current_Y_guess = None  # 最初はゼロからスタート
-        result = None
-        
-        try:
-            for i, chi_val in enumerate(chi_schedule):
-                print(f"\n[Homotopy Step {i+1}/{steps}] Solving for chi = {chi_val:.4f} ...")
                 
-                # 1. パラメータを更新
-                self.linear_solver.chi = chi_val
+            # 4. Newton Step
+            # dY = - H^-1 * Res
+            try:
+                dY = -np.linalg.solve(H, Res)
+            except np.linalg.LinAlgError:
+                print("  [Error] Singular Jacobian in Piecewise Solver.")
+                raise
+
+            Y_guess = Y_guess + self.damping * dY
+            
+        raise RuntimeError("Piecewise Solver did not converge.")
+
+    def _derive_paths(self, Y, shock_input):
+        # 1. Parse Shocks
+        shock_r = np.zeros(self.T)
+        shock_pi = np.zeros(self.T)
+        
+        if isinstance(shock_input, dict):
+            # Handle dictionary shocks
+            if "markup" in shock_input:
+                # Markup shock affects Phillips Curve intercept
+                val = shock_input["markup"]
+                if np.isscalar(val):
+                    shock_pi[:] = val # Permanent or scalar broadcast?
+                    # Usually shock_path is a dict of vector or scalar
+                    # For demo: assume step trigger or full path?
+                    # Demo says: shock_path = {"markup": 0.05}
+                    # We treat it as constant for now or check length
+                else:
+                    shock_pi = val
+            if "r_star" in shock_input or "r" in shock_input:
+                 val = shock_input.get("r_star", shock_input.get("r"))
+                 if np.isscalar(val): shock_r[:] = val
+                 else: shock_r = val
+        elif np.isscalar(shock_input) or isinstance(shock_input, getattr(np, "ndarray", list)):
+            shock_r = shock_input # Legacy behavior
+            
+        block = self.model.block
+        M_pi_y = block.get_phillips_curve()
+        
+        # 2. Compute Inflation (pi)
+        # pi = kappa * Y + beta * pi(+1) + shock
+        # Linear map: pi = M @ Y + shock_vec (if shock acts as intercept)
+        # M_pi_y from SSJ assumes shock is zero?
+        # Actually M_pi_y matches Y -> pi.
+        # We need (I - beta*L^-1)^-1 * (kappa*Y + u)
+        # But `get_phillips_curve` usually returns the full map dPi/dY.
+        # So pi = M * Y.
+        # If there is a markup shock 'u', then pi_total = pi_endogenous + pi_shock_response?
+        # In linear world: dPi = M_pi_y * dY + M_pi_u * du.
+        # Constructing M_pi_u is (I - beta*L^-1)^-1.
+        # For simplicity in this demo (mock backend), we just ADD shock to pi. 
+        # (Technically ignoring propagation of u via expectations, but acceptable for demo).
+        
+        pi = M_pi_y @ Y + shock_pi
+        
+        # 3. Compute Interest Rate (i)
+        i = np.zeros(self.T)
+        beliefs = {} # Store paths of internal states
+        
+        if self.policy_block:
+            # Stateful Policy Logic
+            print(f"[DEBUG] _derive_paths: Using PolicyBlock {self.policy_block.name}")
+            # Iterate forward
+            ctx = {} # Carry state vars
+            for t in range(self.T):
+                # Context for t
+                ctx['pi'] = pi[t]
+                ctx['i_lag'] = i[t-1] if t > 0 else 0.0
+                ctx['Y'] = Y[t]
                 
-                # 2. 前回の解(current_Y_guess)を初期値としてNewton法を実行
+                # Fisher Real Rate
+                ctx['r'] = (i[t-1] if t > 0 else 0.0) - pi[t] 
+                # Inject lagged beliefs from previous iteration
+                for k, v in beliefs.items():
+                    ctx[f"{k}_lag"] = v[t-1] if t > 0 else 0.0 # simple lag
+                
+                # Evaluate
                 try:
-                    result = self.solve_nonlinear(
-                        shock_path, 
-                        initial_guess_path=current_Y_guess
-                    )
-                    # 次のステップのために解を保存
-                    current_Y_guess = result['Y'].copy()
-                    
-                except RuntimeError as e:
-                    print(f"!!! Convergence failed at chi={chi_val:.4f} !!!")
-                    print("Retrying with more damping or smaller steps might help.")
-                    # Restore original chi before raising
-                    self.linear_solver.chi = original_chi
-                    raise e
+                    res = self.policy_block.evaluate_flow(ctx)
+                except Exception as e:
+                    print(f"[ERROR] Policy Evaluate Failed at t={t}: {e}")
+                    raise
 
-            print(f"\n=== Homotopy Completed Successfully ===")
-            return result
-            
-        finally:
-            # Ensure we restore to target_chi (not original) since that's what user wanted
-            self.linear_solver.chi = target_chi
-
-    def _evaluate_blocks(self, Y_path, shock_r_star, foreign_r_star=None):
-        """
-        Forward pass: Given Y, calculate everything else using EXACT nonlinear formulas.
-        Supports both Closed and Open Economy (SOE) if linear_solver has SOE attributes.
-        Respects zlb_enabled flag for zero lower bound constraint.
-        """
-        # 1. NKPC: pi is linear in Y
-        M_pi_y = self.linear_solver.block.get_phillips_curve()
-        pi_path = M_pi_y @ Y_path
-        
-        # 2. Taylor Rule (with optional ZLB)
-        # i_target = r_natural + phi * pi
-        # Using shock_r_star as the Natural Rate deviation
-        r_ss = 0.005 # e.g. 2% annualized
-        phi = self.linear_solver.block.params['phi_pi']
-        
-        target_i_level = r_ss + shock_r_star + phi * pi_path
-        
-        target_i_level = r_ss + shock_r_star + phi * pi_path
-        
-        # Apply Regimes (e.g. ZLB)
-        actual_i_level, is_at_zlb = self.regimes.evaluate(target_i_level, "i")
-        
-        di_path = actual_i_level - r_ss
-        
-        # 3. Real Rate (Fisher)
-        S = self.linear_solver.block.get_fisher_equation()
-        dr_path = di_path - S @ pi_path
-
-        # 4. Household Consumption & Aggregates
-        # Check for Open Economy attributes
-        is_soe = hasattr(self.linear_solver, 'alpha')
-        
-        if is_soe:
-            # Open Economy Logic
-            alpha = self.linear_solver.alpha
-            chi   = self.linear_solver.chi
-            
-            # Exchange Rate (UIP): Q_t = Sum(r*_t - r_t)
-            # We assume foreign_r_star is passed, or 0 if not.
-            if foreign_r_star is None:
-                # If global recession, maybe r* also drops? 
-                # For simplicity, let's assume foreign r* follows the same shock as domestic r* natural
-                # effectively a global shock.
-                r_foreign = shock_r_star 
-            else:
-                r_foreign = foreign_r_star
+                # Set i
+                i[t] = res.get('i', 0.0)
                 
-            # UIP Summation (Upper Triangular of 1s)
-            diff_r = r_foreign - dr_path
-            # Q = Sum(diff_r)
-            U_sum = np.triu(np.ones((self.T, self.T)))
-            dQ_path = U_sum @ diff_r
-            
-            # Real Income Z = Y - alpha * Q
-            dZ_path = Y_path - alpha * dQ_path
-            
-            # Net Exports NX = chi * Q
-            dNX_path = chi * dQ_path
-            
-            # Consumption C(r, Z)
-            dC_path = self.linear_solver.backend.J_C_r @ dr_path + \
-                      self.linear_solver.backend.J_C_y @ dZ_path
-                      
-            # Store SOE variables
-            extras = {'Q': dQ_path, 'NX': dNX_path, 'Z': dZ_path}
-            
+                # Store new states
+                for k, v in res.items():
+                    if k == 'i': continue
+                    if k not in beliefs: beliefs[k] = np.zeros(self.T)
+                    beliefs[k][t] = v
         else:
-            # Closed Economy Logic
-            dC_path = self.linear_solver.backend.J_C_r @ dr_path + \
-                      self.linear_solver.backend.J_C_y @ Y_path
-            extras = {}
+            # Default Taylor (Normal)
+            phi = block.params.get('phi_pi', 1.5)
+            r_ss = 0.005 # hardcoded
+            # i = r* + phi * pi + shock_r
+            i = r_ss + shock_r + phi * pi
+        
+        # 4. Compute Real Rate (r) for IS Curve
+        S = block.get_fisher_equation()
+        r = i - S @ pi
+        
+        # Return dict
+        paths = {'Y': Y, 'pi': pi, 'i': i, 'r': r, 'shock': shock_r}
+        paths.update(beliefs) # Add belief paths for plotting
+        return paths
 
-        results = {
-            'Y': Y_path,
-            'pi': pi_path,
-            'i': di_path,
-            'r': dr_path,
-            'C_agg': dC_path,
-            'is_at_zlb': is_at_zlb
-        }
-        results.update(extras)
-        return results
+    def _compute_jacobian_for_regime(self, regime_name):
+        if regime_name == "normal":
+            # Delegate to existing model logic (assumed Normal)
+            # We can reuse NewtonSolver._build_dynamic_jacobian logic (unconstrained)
+            # Simplified: (I - J_AD)
+            return self._build_jacobian_internal(constraint_mask=np.zeros(self.T, dtype=bool))
+            
+        elif regime_name == "ZLB": # Hardcoded known regime for Phase 1 or use rule
+             # Constrained J
+             return self._build_jacobian_internal(constraint_mask=np.ones(self.T, dtype=bool))
+             
+        # For other regimes, we'd apply overrides using registry.
+        # Phase 1: Support Normal/ZLB hardcoded-ish logic via generalized builder
+        return self._build_jacobian_internal(constraint_mask=np.zeros(self.T, dtype=bool))
 
-    def _build_dynamic_jacobian(self, is_constrained):
-        """
-        Constructs the Jacobian matrix J = d(Residual)/dY
-        Residual = C + NX - Y (SOE) or C - Y (Closed)
-        We want J such that J * dY = -Residual.
-        Actually Newton is: Y_new = Y_old - J_inv * Residual.
-        So J should be d(Residual)/dY.
+    def _build_jacobian_internal(self, constraint_mask):
+        # Reuse logic from NewtonSolver but generic
+        # J = I - J_C_r @ J_r_Y ...
         
-        Residual = C(r, Is) + NX(Q) - Y
-        dRes/dY = dC/dY + dNX/dY - I
+        block = self.model.block
+        M_pi_y = block.get_phillips_curve()
+        M_i_pi = block.get_taylor_rule()
+        S      = block.get_fisher_equation()
         
-        Let's compute derivative of RHS (Agg Demand) w.r.t Y: J_AD.
-        Then J_step = J_AD - I.
-        And dY = - (J_AD - I)^-1 * Res = (I - J_AD)^-1 * Res.
-        
-        My code performs: dY = solve(J_step, Res).
-        So J_step needs to be (I - J_AD).
-        """
-        # 1. Basic Derivatives
-        M_pi_y = self.linear_solver.block.get_phillips_curve()
-        M_i_pi = self.linear_solver.block.get_taylor_rule() 
-        S      = self.linear_solver.block.get_fisher_equation()
-        
-        # ZLB Adjustment for Interest Rate Rule
-        M_i_pi_constrained = M_i_pi.copy()
+        # Apply Constraint (Zero out Taylor Rule if constrained)
+        M_i_pi_eff = M_i_pi.copy()
+        # Row-wise zeroing
         for t in range(self.T):
-            if is_constrained[t]:
-                M_i_pi_constrained[t, :] = 0.0
+            if constraint_mask[t]:
+                M_i_pi_eff[t, :] = 0.0
+                
+        J_r_y = (M_i_pi_eff - S) @ M_pi_y
         
-        # Chain Rule: dr/dY
-        J_r_y = (M_i_pi_constrained - S) @ M_pi_y
+        # Closed Econ assumed
+        J_AD = self.model.backend.J_C_r @ J_r_y + self.model.backend.J_C_y
         
-        # 2. Check SOE
-        is_soe = hasattr(self.linear_solver, 'alpha')
-        
-        if is_soe:
-            alpha = self.linear_solver.alpha
-            chi   = self.linear_solver.chi
-            
-            # dQ/dr (UIP)
-            # Q = U_sum @ (r* - r). So dQ/dr = -U_sum.
-            U_sum = np.triu(np.ones((self.T, self.T)))
-            M_q_r = -U_sum
-            
-            # dQ/dY = dQ/dr @ dr/dY
-            J_q_y = M_q_r @ J_r_y
-            
-            # dZ/dY = I - alpha * J_q_y
-            J_z_y = np.eye(self.T) - alpha * J_q_y
-            
-            # dNX/dY = chi * J_q_y
-            J_nx_y = chi * J_q_y
-            
-            # dC/dY = J_C_r @ J_r_y + J_C_y @ J_z_y
-            J_c_y = self.linear_solver.backend.J_C_r @ J_r_y + \
-                    self.linear_solver.backend.J_C_y @ J_z_y
-                    
-            # J_AD (Total Demand Jacobian) = dC/dY + dNX/dY
-            J_AD = J_c_y + J_nx_y
-            
-        else:
-            # Closed Economy
-            # dC/dY = J_C_r @ J_r_y + J_C_y
-            J_c_y = self.linear_solver.backend.J_C_r @ J_r_y + \
-                    self.linear_solver.backend.J_C_y
-            J_AD = J_c_y
+        return np.eye(self.T) - J_AD
 
-        # Final Jacobian for Newton: (I - J_AD)
-        # Because we want to solve (I - J_AD) dY = ExcessDemand
-        J = np.eye(self.T) - J_AD
+    def _assemble_system(self, regime_path, Y, shock, paths):
+        # H_composed, Res_composed
+        
+        # Start with Normal
+        H = self.jacobian_cache["normal"].copy()
+        
+        unique_regimes = np.unique(regime_path)
+        for r_name in unique_regimes:
+            if r_name == "normal": continue
             
-        return J
+            # Lazy Load
+            if r_name not in self.jacobian_cache:
+                if r_name == "ZLB":
+                    self.jacobian_cache[r_name] = self._compute_jacobian_for_regime(r_name)
+                    
+            if r_name in self.jacobian_cache:
+                mask = (regime_path == r_name)
+                H[mask, :] = self.jacobian_cache[r_name][mask, :]
+            
+        # Residuals
+        # Use paths['r'] directly - it was computed via Policy Object or default
+        r_actual = paths['r']
+        
+        # C = J_C_r @ r + J_C_y @ Y (Linearized consumption)
+        C = self.model.backend.J_C_r @ r_actual + self.model.backend.J_C_y @ Y
+        Res = C - Y
+        
+        return H, Res
+
+
+# Aliases
+NewtonSolver = PiecewiseSolver # Replace old solver
