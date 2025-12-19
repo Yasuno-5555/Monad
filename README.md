@@ -1,4 +1,4 @@
-# Monad Studio
+# Monad 
 
 Monad is a thinking library for macroeconomic models.
 
