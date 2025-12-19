@@ -5,10 +5,19 @@
 #include "../grid/MultiDimGrid.hpp"
 #include "../kernel/TwoAssetKernel.hpp"
 #include "../Params.hpp"
-#include "../gpu/CudaUtils.hpp"
 #include "../Dual.hpp"
 
+#ifdef MONAD_GPU
+#include "../gpu/CudaUtils.hpp"
+#endif
+
 namespace Monad {
+
+#ifdef MONAD_GPU
+class CudaBackend; // Forward decl just in case
+#else
+class CudaBackend; // Forward decl for non-GPU case to allow pointer? No, verify usage.
+#endif
 
 class TwoAssetSolver {
     const MultiDimGrid& grid;
@@ -37,6 +46,7 @@ public:
                          const IncomeProcess& income) {
         
         // v3.0 GPU Acceleration
+#ifdef MONAD_GPU
         if (gpu_backend) {
              // 1. Upload Loop State (Guess V_{t+1})
              gpu_backend->upload_value(guess.value);
@@ -67,6 +77,7 @@ public:
              finalize_policy(guess, result, max_diff);
              return max_diff;
         }
+#endif
         
 
         // --- CPU Fallback ---
@@ -99,6 +110,7 @@ public:
 
     // --- v3.2 Verification: Dual Kernel Test ---
     void test_dual_kernel() {
+#ifdef MONAD_GPU
         if (!gpu_backend) {
             std::cout << "[SKIP] No GPU Backend." << std::endl;
             return;
@@ -139,9 +151,11 @@ public:
         
         // --- v3.2 Step 3: Test FakeNews Kernel ---
         test_fake_news();
+#endif
     }
     
     void test_fake_news() {
+#ifdef MONAD_GPU
         if (!gpu_backend) return;
         
         std::cout << "\n--- Testing GPU FakeNews Kernel ---" << std::endl;
@@ -180,9 +194,11 @@ public:
         
         // --- v3.2 Step 4: Test IRF Computation ---
         test_full_jacobian_gpu();
+#endif
     }
     
     void test_full_jacobian_gpu() {
+#ifdef MONAD_GPU
         if (!gpu_backend) return;
         
         std::cout << "\n--- Computing GPU Jacobians (T=50) ---" << std::endl;
@@ -214,6 +230,7 @@ public:
         
         // v3.3: Test GE Solver
         test_ge_solver();
+#endif
     }
     
     // --- v3.3: Steady-State General Equilibrium Solver ---
@@ -230,7 +247,7 @@ public:
     GEResult solve_steady_state_ge(TwoAssetPolicy& policy, IncomeProcess& income,
                                    double r_m_guess, double B_target, 
                                    int max_iter = 50, double tol = 1e-8) {
-        
+#ifdef MONAD_GPU   
         if (!gpu_backend) {
             std::cout << "[ERROR] GPU backend required for GE solver." << std::endl;
             return {0, 0, 0, false};
@@ -382,9 +399,14 @@ public:
         result.converged = false;
         std::cout << "[FAIL] GE solver did not converge." << std::endl;
         return result;
+#else
+        std::cout << "[ERROR] GE Solver requires GPU backend." << std::endl;
+        return {0.0, 0.0, 0, false};
+#endif
     }
     
     void test_ge_solver() {
+#ifdef MONAD_GPU
         if (!gpu_backend) return;
         
         std::cout << "\n=== v3.3.3 Full Steady-State GE Newton Solver ===" << std::endl;
@@ -424,6 +446,7 @@ public:
             std::cout << "  Final r_m:         " << result.r_m_eq << std::endl;
             std::cout << "  Consider: Adjusting damping or checking model calibration." << std::endl;
         }
+#endif
     }
 
 private:

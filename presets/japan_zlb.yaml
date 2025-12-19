@@ -1,0 +1,36 @@
+
+name: Japan ZLB Scenario
+type: dsge_perfect_foresight
+description: "Low r* (0.2%) economy with savings glut (High Beta) and flat Phillips Curve. Monetary policy space is severely limited."
+
+parameters:
+  beta: {value: 0.998, description: High Patience (Savings Glut)}
+  sigma: {value: 1.0, description: Log Utility}
+  phi_pi: {value: 1.5, description: Taylor Rule}
+  rho_r: {value: 0.9, description: Persistent Shocks}
+  kappa: {value: 0.03, description: Very Flat Phillips Curve}
+  r_star: {value: 0.002, description: Near-Zero Natural Rate (0.2%)}
+
+variables:
+  y: {guess: 0.0, description: Output Gap}
+  pi: {guess: -0.005, description: Deflationary Baseline}
+  i: {guess: 0.0, description: ZLB Binding}
+  e_r: {guess: 0.0, description: Natural Rate Shock}
+
+equations:
+  # IS Curve (Standard)
+  - resid: "y[t] - y[t+1] + (1/sigma)*(i[t] - pi[t+1] - (r_star + e_r[t]))"
+  
+  # NKPC (Flat)
+  - resid: "pi[t] - beta*pi[t+1] - kappa*y[t]"
+  
+  # Taylor Rule with ZLB (Simple max function logic often handled by solver, here simplified)
+  # i = max(0, r* + phi*pi + ...) -> approximated here, strictly reliant on Solver's ZLB handling or simple rule?
+  # The instruction says "Japan ZLB". Monad's NewtonSolver handles ZLB bounds if 'i' is constrained.
+  # Here we define unconstrained rule, trust Solver/Bounds?
+  # Or use a smooth ZLB function? 
+  # Let's stick to standard rule and let the Scenario runner apply ZLB check.
+  - resid: "i[t] - (r_star + phi_pi*pi[t])"
+  
+  # Shock
+  - resid: "e_r[t] - rho_r * e_r[t-1]"

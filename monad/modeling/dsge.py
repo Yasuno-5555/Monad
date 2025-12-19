@@ -126,7 +126,7 @@ class DSGEStaticSolver:
         
         self._is_compiled = True
         
-    def solve(self, verbose=True):
+    def solve(self, verbose=True, max_iter=200, tol=1e-6, damping=0.5):
         if not self._is_compiled:
             self.compile()
             
@@ -155,9 +155,8 @@ class DSGEStaticSolver:
                 raise e
 
         # Solve via C++
-        # Using Robust Damping for large systems
         try:
-            x_sol = monad_core.solve_static_model(fun, x0, 200, 1e-6, 0.5)
+            x_sol = monad_core.solve_static_model(fun, x0, max_iter, tol, damping)
         except Exception as e:
             print(f"[FAIL] {e}")
             return None

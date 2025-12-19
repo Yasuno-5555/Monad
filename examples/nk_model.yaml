@@ -1,0 +1,53 @@
+name: New Keynesian Benchmark
+type: dsge_perfect_foresight
+description: Standard 3-equation NK model with ZLB option.
+
+parameters:
+  sigma: 
+    value: 1.0
+    description: Intertemporal Elasticity of Substitution (1/sigma)
+  beta: 
+    value: 0.99
+    description: Discount Factor
+  kappa: 
+    value: 0.1
+    description: Slope of Phillips Curve
+  phi_pi: 
+    value: 1.5
+    description: Taylor Rule Inflation Coefficient
+  phi_y: 
+    value: 0.125
+    description: Taylor Rule Output Coefficient
+  r_star: 
+    value: 0.01
+    description: Natural Rate of Interest
+  rho_r:
+    value: 0.8
+    description: Persistence of Natural Rate Shock
+
+variables:
+  y: 
+    guess: 0.0
+    description: Output Gap
+  pi: 
+    guess: 0.0
+    description: Inflation Rate
+  i: 
+    guess: 0.01
+    description: Nominal Interest Rate
+  e_r:
+    guess: 0.0
+    description: Natural Rate Shock Process
+
+equations:
+  # IS Curve (with r_star shock)
+  - resid: "y[t] - y[t+1] + (1/sigma)*(i[t] - pi[t+1] - (r_star + e_r[t]))"
+  
+  # NKPC
+  - resid: "pi[t] - beta*pi[t+1] - kappa*y[t]"
+  
+  # Taylor Rule
+  - resid: "i[t] - (r_star + phi_pi*pi[t] + phi_y*y[t])"
+  
+  # Shock Process
+  - resid: "e_r[t] - rho_r * e_r[t-1]"

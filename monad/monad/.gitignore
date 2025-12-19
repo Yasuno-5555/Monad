@@ -1,0 +1,51 @@
+# Build outputs
+build/
+build2/
+build3/
+build_phase3/
+build_solver/
+*.exe
+*.o
+*.obj
+
+# Generated data
+*.csv
+*.txt
+*.json
+!model_config.json
+!test_model.json
+
+# Generated images
+*.png
+
+# Logs
+*_log*.txt
+compile_*.txt
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+*.tmp
+*.temp
+
+# But include documentation figures
+# But include documentation figures
+!docs/figures/*.png
+!experiments/*.png

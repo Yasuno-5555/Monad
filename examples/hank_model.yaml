@@ -1,0 +1,59 @@
+
+name: One Asset HANK Benchmark
+type: dsge_perfect_foresight
+
+# HANK Parameters
+parameters:
+  beta: 
+    value: 0.986
+    description: Discount Factor
+  sigma: 
+    value: 2.0
+    description: Risk Aversion
+  phi_pi: 
+    value: 1.5
+    description: Taylor Rule Coeff
+  rho_r: 
+    value: 0.8
+    description: Persistence of Shock
+
+variables:
+  # Aggregate Variables
+  y: {guess: 1.0, description: Output}
+  c: {guess: 1.0, description: Consumption (Block Output)}
+  pi: {guess: 0.0, description: Inflation}
+  i: {guess: 0.0, description: Nominal Rate}
+  r: {guess: 0.0, description: Real Rate (Block Input)}
+  w: {guess: 1.0, description: Wage (Block Input)}
+  e_r: {guess: 0.0, description: Shock}
+
+# Heterogeneous BLOCK
+blocks:
+  household:
+    type: heterogeneous
+    kernel: OneAsset
+    inputs: [r, w]  # Backend expects 'rm' and 'w' usually, solver handles mapping
+    outputs: [c]    # Backend provides 'C'
+
+equations:
+  # Market Clearing
+  - resid: "y[t] - c[t]"
+  
+  # Fisher Equation (r = i - pi')
+  - resid: "r[t] - (i[t] - pi[t+1])"
+  
+  # NKPC (Simplified, or standard)
+  # For One Asset, we often have sticky prices.
+  # pi = beta * pi(+1) + kappa * y
+  - resid: "pi[t] - beta*pi[t+1] - 0.1*y[t]"
+    
+  # Taylor Rule
+  - resid: "i[t] - (phi_pi * pi[t] + e_r[t])"
+  
+  # Wage Schedule (w = marginal cost if linear tech?)
+  # Assume linear production Y = N. w = 1.
+  # Or w/P = 1.
+  - resid: "w[t] - y[t]"  # Example: w varies with y (demand side)
+
+  # Shock Process
+  - resid: "e_r[t] - rho_r * e_r[t-1]"

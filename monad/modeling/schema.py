@@ -34,6 +34,7 @@ class ModelSpec:
     variables: Dict[str, VariableSpec]
     parameters: Dict[str, ParameterSpec]
     equations: List[EquationSpec]
+    description: str = ""
     blocks: Dict[str, BlockSpec] = field(default_factory=dict)
     
     @classmethod
@@ -76,6 +77,7 @@ class ModelSpec:
             variables=vars_dict,
             parameters=params_dict,
             equations=equations,
+            description=data.get('description', ''),
             blocks=blocks
         )
 

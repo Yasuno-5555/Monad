@@ -1,0 +1,41 @@
+{
+    "model_name": "GPU_Jacobian_Test",
+    "parameters": {
+        "beta": 0.986,
+        "r_guess": 0.01,
+        "r_a": 0.00,
+        "sigma": 2.0,
+        "chi": 10.0,
+        "m_min": 0.0,
+        "test_gpu_jacobian": 1.0
+    },
+    "solver_settings": {
+        "open_economy": false,
+        "zlb": false
+    },
+    "income_process": {
+        "n_z": 2,
+        "z_grid": [
+            0.8,
+            1.2
+        ],
+        "transition_matrix": [
+            0.9,
+            0.1,
+            0.1,
+            0.9
+        ]
+    },
+    "agents": [
+        {
+            "grids": {
+                "asset_a": {
+                    "type": "Uniform",
+                    "n_points": 32,
+                    "min": 0.0,
+                    "max": 20.0
+                }
+            }
+        }
+    ]
+}

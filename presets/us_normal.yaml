@@ -1,0 +1,24 @@
+
+name: US Normal Scenario
+type: dsge_perfect_foresight
+description: "Standard calibration (r* 2.0%) representing a normal economy with sufficient policy space and standard dynamics."
+
+parameters:
+  beta: {value: 0.99, description: Standard Discount}
+  sigma: {value: 2.0, description: Risk Aversion}
+  phi_pi: {value: 1.5, description: Taylor Rule}
+  rho_r: {value: 0.8, description: Persistence}
+  kappa: {value: 0.1, description: Standard Slope}
+  r_star: {value: 0.02, description: Natural Rate 2%}
+
+variables:
+  y: {guess: 0.0, description: Output Gap}
+  pi: {guess: 0.02, description: Target Inflation 2%}
+  i: {guess: 0.04, description: Nominal Rate 4%}
+  e_r: {guess: 0.0, description: Shock}
+
+equations:
+  - resid: "y[t] - y[t+1] + (1/sigma)*(i[t] - pi[t+1] - (r_star + e_r[t]))"
+  - resid: "pi[t] - beta*pi[t+1] - kappa*y[t]"
+  - resid: "i[t] - (r_star + phi_pi*pi[t])"
+  - resid: "e_r[t] - rho_r * e_r[t-1]"
