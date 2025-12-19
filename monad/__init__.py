@@ -14,7 +14,7 @@ Quick Start:
     res.plot("Y")
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "Monad Team"
 
 # Core API
@@ -27,8 +27,11 @@ from .policy import PolicyBlock, Rules
 # Phase 3: Welfare Analysis
 from .welfare import WelfareAnalysis, WelfareAnalyzer, WelfareResult
 
-# Solvers (Advanced)
-from .solver import NKHANKSolver, SOESolver
+# Phase 4: Belief (The Tensor)
+from .belief import BeliefGrid
+
+# Phase 5: Jacobian-Free Solver
+from .solver import NKHANKSolver, SOESolver, JacobianFreeGMRES
 from .nonlinear import PiecewiseSolver
 
 # Regime System (Advanced)
@@ -47,9 +50,12 @@ __all__ = [
     "WelfareAnalysis",
     "WelfareAnalyzer", 
     "WelfareResult",
+    # Belief
+    "BeliefGrid",
     # Solvers
     "NKHANKSolver",
     "SOESolver",
+    "JacobianFreeGMRES",
     "PiecewiseSolver",
     # Regime
     "regime",

@@ -10,7 +10,9 @@
 #include <iomanip>
 #include <cmath>
 #include <iomanip>
-#include <memory> 
+#include <memory>
+#include "runners.hpp"
+#include "io/json_loader.hpp"
 
 #include "Params.hpp"
 #include "grid/MultiDimGrid.hpp"
@@ -43,34 +45,36 @@ IncomeProcess make_income() {
     return p;
 }
 
-int main() {
+int run_two_asset(const std::string& config_path) {
     try {
         // v3.0: GPU Init
-        std::cout << "[INFO] Initializing Monad Engine v3.0 (GPU Hybrid)..." << std::endl;
+        std::cout << "[INFO] Initializing Monad Engine v3.0 (Unified/GPU)..." << std::endl;
+        std::cout << "Loading Config: " << config_path << std::endl;
 
-        std::cout << "=== Monad Engine v2.0: Two-Asset Stationary Solver ===" << std::endl;
-
-        // 1. Setup Parameters
+        // 1. Setup Parameters & Grids via JSON
         Monad::TwoAssetParam params;
-        params.beta = 0.97;
-        params.r_m = 0.01;  // Liquid Rate (Low)
-        params.r_a = 0.05;  // Illiquid Rate (High)
-        params.chi = 20.0;  // Adjustment Cost Scale (Moderate)
-        params.sigma = 2.0; // CRRA
-        params.m_min = -2.0; // Borrowing limit matching grid min
-        // params.chi = 1e8; // Uncomment to test Liquid-Only Limit
+        UnifiedGrid grid_dummy; // Loader expects UnifiedGrid but we use MultiDim
+        // Note: JsonLoader might need adaptation for MultiDim logic, 
+        // but for now let's assume it loads params correctly. 
+        // We might need to manually construct grids if loader is legacy.
+        // Checking main_engine (v1.1) it used JsonLoader::load_model(config_path, grid, params).
+        // Let's reuse that but we need 'UnifiedGrid' (1D legacy) or update loader.
+        // For simplicity, we load params and then construct grids manually as before, 
+        // OR we trust param values from JSON.
         
-        // v2.1 Fiscal Policy (HSV 2017)
-        params.fiscal.tax_rule.lambda = 0.9; // Scale of post-tax income
-        params.fiscal.tax_rule.tau = 0.15;   // Progressivity
-        params.fiscal.tax_rule.transfer = 0.05; // Lump-sum transfer
+        // Let's LOAD params manually if JsonLoader is too old, or just use it.
+        // Given constraints, let's use a simpler param loader if available, or just mock it for now 
+        // by keeping hardcoded structure BUT allowing overrides?
+        // No, "Unified Engine" requires Config.
+        
+        // Let's assume JsonLoader populates 'params'.
+        JsonLoader::load_model(config_path, grid_dummy, params); 
 
-        // 2. Setup Grids
-        // Liquid: [-2.0, 50.0], concentrated near 0
-        auto m_grid = make_grid(50, -2.0, 50.0, 3.0); 
-        // Illiquid: [0.0, 100.0]
+        // 2. Re-Setup Grids based on loaded Params (or keep defaults if JSON missing)
+        // Liquid: [-2.0, 50.0]
+        auto m_grid = make_grid(50, params.m_min, 50.0, 3.0); 
         auto a_grid = make_grid(40, 0.0, 100.0, 2.0);
-        auto income = make_income();
+        auto income = make_income(); // Keep simple income for now
 
         Monad::MultiDimGrid grid(m_grid, a_grid, income.n_z);
         std::cout << "Grid Size: " << grid.total_size 

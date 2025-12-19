@@ -30,16 +30,15 @@ __device__ T d_inv_u_prime(T val, double sigma) {
 }
 
 // Linear Interpolation on device (Templated for Dual xi)
-template <typename T>
-__device__ T d_interp_1d(const double* x, const double* y, int n, T xi) {
+// Linear Interpolation (Fully Templated for Data and Query)
+template <typename DataT, typename QueryT>
+__device__ QueryT d_interp_1d(const DataT* x, const DataT* y, int n, QueryT xi) {
     if (xi <= x[0]) return y[0];
     if (xi >= x[n-1]) return y[n-1];
     
-    // Binary Search (on x which is double*)
+    // Binary Search
     int left = 0;
     int right = n - 1;
-    // We need to extract value from xi for binary search if xi is Dual?
-    // Dual comparison operators use .val, so it's fine.
     
     while (left < right - 1) { 
         int mid = (left + right) / 2;
@@ -47,7 +46,11 @@ __device__ T d_interp_1d(const double* x, const double* y, int n, T xi) {
         else right = mid;
     }
     
-    T t = (xi - x[left]) / (x[right] - x[left]);
+    // Interpolation fraction t must retain derivative info if xi is Dual
+    // But if DataT is Dual and QueryT is Dual, we need generic arithmetic.
+    // Assuming +/-/*// are overloaded.
+    
+    QueryT t = (xi - x[left]) / (x[right] - x[left]);
     return y[left] + t * (y[right] - y[left]);
 }
 

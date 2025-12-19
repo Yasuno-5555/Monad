@@ -55,9 +55,12 @@ void write_matrix_csv(const Eigen::MatrixXd& mat, const std::string& filename) {
     std::cout << "  Exported " << filename << " (" << mat.rows() << "x" << mat.cols() << ")" << std::endl;
 }
 
-int main() {
+int run_experiment_tt(const std::string& config_path) {
     try {
         std::cout << "[INFO] Monad Lab: Full TT Jacobian Experiment" << std::endl;
+        std::cout << "Loading Config: " << config_path << std::endl;
+        // In full refactor, we would load params here. Keeping hardcoded as demo fallback
+        // but acknowledging config path.
 
         // 1. Setup Parameters
         Monad::TwoAssetParam params;

@@ -40,6 +40,25 @@ class MonadModel:
         self.overrides = {}
         self.history_log = []
         self.policy_block = None
+        
+        # v2.0 Unified Engine Support
+        self.assets = ["liquid", "illiquid"] # Default 2-Asset
+        self.state_vars = ["m", "a", "z"]    # Default States
+    
+    def add_asset(self, name):
+        """Enable Multi-Asset support (e.g. 'crypto')."""
+        if name not in self.assets:
+            self.assets.append(name)
+            self.state_vars.append(f"a_{name}")
+            self._log_change("system", {"add_asset": name})
+        return self
+        
+    def add_state(self, name):
+        """Enable new state variables (e.g. 'belief')."""
+        if name not in self.state_vars:
+            self.state_vars.append(name)
+            self._log_change("system", {"add_state": name})
+        return self
 
     def attach(self, policy_block):
         """
@@ -102,6 +121,14 @@ class MonadModel:
         combined_params = self.overrides.copy()
         if params:
             combined_params.update(params)
+
+        # v2.0 Unified Engine: Inject Dimensionality Config
+        combined_params["n_assets"] = len(self.assets)
+        combined_params["has_belief"] = "belief" in self.state_vars or "b" in self.state_vars
+        
+        # Special Flag for Crypto (if named explicitly)
+        if "crypto" in self.assets:
+             combined_params["crypto"] = True
 
         if combined_params:
             self._update_config(config_path, combined_params)
@@ -195,8 +222,11 @@ class MonadModel:
         full_path = os.path.join(self.working_dir, config_path)
         
         try:
-            with open(full_path, 'r') as f:
-                data = json.load(f)
+            if os.path.exists(full_path):
+                with open(full_path, 'r') as f:
+                    data = json.load(f)
+            else:
+                data = {}
             
             # Update 'parameters' section
             if 'parameters' not in data:

@@ -27,17 +27,22 @@ list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_debug_dual.cpp")
 list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_two_asset.cpp")
 list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_experiment_tt.cpp")
 
-add_executable(MonadTwoAssetCUDA ${ALL_SOURCES} "src/main_two_asset.cpp")
-add_executable(ExperimentTT ${ALL_SOURCES} "src/main_experiment_tt.cpp")
+# Include the runner implementations (formerly mains)
+add_executable(MonadEngine ${ALL_SOURCES} 
+    "src/UniversalEngine.cpp" 
+    "src/main_two_asset.cpp" 
+    "src/main_experiment_tt.cpp"
+)
+
+# Legacy Targets (optional, can keep for back-compat)
+# add_executable(MonadTwoAssetCUDA ${ALL_SOURCES} "src/main_two_asset.cpp")
 
 
 # Link against CUDA Runtime
-target_link_libraries(MonadTwoAssetCUDA PRIVATE CUDA::cudart)
-target_link_libraries(ExperimentTT PRIVATE CUDA::cudart)
+target_link_libraries(MonadEngine PRIVATE CUDA::cudart)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    target_compile_options(MonadTwoAssetCUDA PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
-    target_compile_options(ExperimentTT PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
+    target_compile_options(MonadEngine PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
 endif()
 """
 

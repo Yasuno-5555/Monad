@@ -212,11 +212,17 @@ class Monad:
     The Agent.
     Orchestrates the model lifecycle: Setup -> Shock -> Solve.
     """
-    def __init__(self, config: Union[str, Dict] = "us_normal"):
+    def __init__(self, config: Union[str, Dict] = "us_normal", binary_path: str = "MonadEngine.exe", working_dir: str = "."):
         self.config_params = {}
         self.model_config = {}
         self.shocks = {}
         self.name = "Monad Model"
+        self.binary_path = binary_path
+        self.working_dir = working_dir
+        
+        # Unified Engine Config
+        self.extra_assets = []
+        self.extra_states = []
         
         # Load Configuration
         if isinstance(config, str):
@@ -228,7 +234,32 @@ class Monad:
         # Core Components
         self._engine = None # MonadModel instance
         self._solver = None # Python Solver instance
-        self.T = self.config_params.get('T', 50)
+    @property
+    def assets(self):
+        """Effective list of assets."""
+        defaults = ["liquid", "illiquid"]
+        # Avoid duplicates if user added one of defaults (unlikely but safe)
+        extras = [x for x in self.extra_assets if x not in defaults]
+        return defaults + extras
+
+    @property
+    def state_vars(self):
+        """Effective list of state variables."""
+        defaults = ["m", "a", "z"]
+        extras = [x for x in self.extra_states if x not in defaults]
+        return defaults + extras
+
+    def add_asset(self, name: str):
+        """Enable Multi-Asset support (e.g. 'crypto')."""
+        if name not in self.extra_assets:
+            self.extra_assets.append(name)
+        return self
+
+    def add_state(self, name: str):
+        """Enable new state variables (e.g. 'belief')."""
+        if name not in self.extra_states:
+            self.extra_states.append(name)
+        return self
 
     def _load_preset(self, name: str):
         """Load parameters from a preset file (yaml/json)."""
@@ -302,10 +333,26 @@ class Monad:
             self.shocks[name] = val[:self.T]
         else:
             # Generate AR(1)
-            t = np.arange(self.T)
             series = size * (persistence ** t)
             self.shocks[name] = series
             
+        return self
+
+    def run(self, params: Dict = None):
+        """
+        Manually run the C++ Engine (Configuration Phase).
+        Useful for generating Jacobians without solving the full model.
+        """
+        if self._engine is None:
+            self._engine = MonadModel(self.binary_path, working_dir=self.working_dir) 
+            
+            # Apply Unified Config
+            for asset in self.extra_assets:
+                self._engine.add_asset(asset)
+            for state in self.extra_states:
+                self._engine.add_state(state)
+                
+        self._engine.run(params=params or self.config_params)
         return self
 
     def solve(self, nonlinear: bool = False, zlb: bool = False, method: str = "auto") -> MonadResult:
@@ -319,9 +366,14 @@ class Monad:
         """
         # 0. Initialize Engine/Backend if needed
         # We assume the binary exists or we use cache.
-        # Ideally MonadModel handles the C++ execution.
         if self._engine is None:
-            self._engine = MonadModel("MonadTwoAsset.exe") # Default binary name
+            self._engine = MonadModel(self.binary_path, working_dir=self.working_dir) 
+            
+            # Apply Unified Config
+            for asset in self.extra_assets:
+                self._engine.add_asset(asset)
+            for state in self.extra_states:
+                self._engine.add_state(state)
             # Run engine to ensure Jacobians are ready (or use cache)
             # This step might be heavy, but it ensures 'm' is ready to think.
             # We only run if we haven't or if params changed drastically?
