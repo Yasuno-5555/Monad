@@ -5,7 +5,7 @@
 #include "ssj/FakeNewsAggregator.hpp"
 #include "ssj/SsjSolver3D.hpp"
 #include "ssj/GeneralEquilibrium.hpp"
-#include "analysis/InequalityAnalyzer.hpp"
+#include "InequalityAnalyzer.hpp"
 #include <fstream>
 #include <iomanip>
 #include <cmath>

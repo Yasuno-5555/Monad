@@ -3,6 +3,7 @@
 Monad is a thinking library for macroeconomic models.
 
 It unifies the workflow of setting up, shocking, solving, and comparing heterogeneous agent models (HANK) and their linear equivalents (RANK/NK).
+This is largely AI-generated code. I cannot fully verify the results myself. Use at your own risk and please validate before citing.
 
 ## Why Monad?
 
