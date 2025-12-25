@@ -4,24 +4,21 @@
 #include "../grid/MultiDimGrid.hpp"
 #include "../blocks/FiscalBlock.hpp"
 
-// v2.0 Two-Asset Kernel
-// Data structures for policy and value functions in the two-asset world.
-
 namespace Monad {
 
 struct TwoAssetParam {
-    double beta;
-    double r_m; // Liquid return
-    double r_a; // Illiquid return
-    double chi; // Adjustment cost scale
-    double sigma; // CRRA curvature
-    double m_min; // Borrowing limit
+    double beta = 0.986;
+    double r_m = -0.02; // Liquid return
+    double r_a = 0.02; // Illiquid return
+    double chi = 0.033; // Adjustment cost scale
+    double sigma = 2.0; // CRRA curvature
+    double m_min = 0.0; // Borrowing limit
     
     // v2.1 Fiscal
     FiscalBlock::FiscalPolicy fiscal;
     
     // v3.0 Compute Config
-    bool use_gpu = true;
+    bool use_gpu = false;
 };
 
 struct TwoAssetPolicy {
@@ -41,13 +38,10 @@ struct TwoAssetPolicy {
     // 1.0 = Adjustment
     std::vector<double> adjust_flag;
 
+    TwoAssetPolicy() = default;
+
     TwoAssetPolicy(int size) {
-        value.resize(size);
-        c_pol.resize(size);
-        m_pol.resize(size);
-        a_pol.resize(size);
-        d_pol.resize(size);
-        adjust_flag.resize(size);
+        resize(size);
     }
     
     void resize(int size) {

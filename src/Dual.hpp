@@ -1,4 +1,31 @@
 #pragma once
+
+// =============================================================================
+// Zigen Integration (CPU-only)
+// =============================================================================
+// For CPU-only code paths, Zigen's optimized Dual can be used via ZigenDuald.
+// The original Dual<T> is retained for CUDA compatibility.
+//
+// Usage in CPU code:
+//   #include "Dual.hpp"
+//   Monad::ZigenDuald x(3.0, 1.0);  // Use Zigen's implementation
+//
+// Usage in CUDA code:
+//   #include "Dual.hpp"
+//   Duald x(3.0, 1.0);  // Use original CUDA-compatible implementation
+// =============================================================================
+
+#ifndef __CUDACC__
+#include <Zigen/Autodiff.hpp>
+namespace Monad {
+    /// Zigen-backed Dual for CPU-only code (potentially faster due to constexpr)
+    template<typename T>
+    using ZigenDual = ::Zigen::Autodiff::Dual<T>;
+    using ZigenDuald = ::Zigen::Autodiff::Duald;
+    using ZigenDualf = ::Zigen::Autodiff::Dualf;
+}
+#endif
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif

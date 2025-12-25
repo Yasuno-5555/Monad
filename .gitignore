@@ -19,6 +19,7 @@ build_solver/
 *.png
 
 # Logs
+*.log
 *_log*.txt
 compile_*.txt
 

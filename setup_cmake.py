@@ -2,50 +2,78 @@
 content = r"""cmake_minimum_required(VERSION 3.18)
 project(MonadTwoAssetCUDA LANGUAGES CXX CUDA)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_ARCHITECTURES "native")
 
 # Find CUDA Toolkit to get CUDA::cudart
-find_package(CUDAToolkit REQUIRED)
+# Find CUDA Toolkit with components
+find_package(CUDAToolkit REQUIRED COMPONENTS cudart cublas)
 
-include_directories(${CMAKE_SOURCE_DIR}/build_phase3/_deps/eigen-src)
+# Find OpenMP for Zigen acceleration
+find_package(OpenMP)
+message(STATUS "CUDAToolkit_INCLUDE_DIRS: ${CUDAToolkit_INCLUDE_DIRS}")
 
-# Collect Sources
-file(GLOB_RECURSE ALL_SOURCES "src/*.cpp" "src/*.hpp" "src/gpu/*.cu" "src/gpu/*.hpp")
+# Include directories
+include_directories(${CMAKE_SOURCE_DIR}/3rdparty/eigen)
+include_directories(${CMAKE_SOURCE_DIR}/3rdparty/Zigen/include)
+include_directories(${CMAKE_SOURCE_DIR}/3rdparty)
+include_directories(${CMAKE_SOURCE_DIR}/src)
 
-# Filter out files that require extra dependencies (Python, JSON) or are alternative mains
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_analytical.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_engine.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_phase3.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_trivial.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/python_bindings.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/python_bindings_min.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/test_.*\\.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_debug_dual.cpp")
+# Collect Sources for Library
+file(GLOB_RECURSE MONAD_SOURCES "src/*.cpp" "src/gpu/*.cu")
+file(GLOB_RECURSE ZIGEN_SOURCES "3rdparty/Zigen/src/*.cpp" "3rdparty/Zigen/src/*.cu")
 
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_two_asset.cpp")
-list(FILTER ALL_SOURCES EXCLUDE REGEX "src/main_experiment_tt.cpp")
+# Filter out all main files and problematic headers/sources
+list(FILTER MONAD_SOURCES EXCLUDE REGEX "src/main_.*\\.cpp")
+list(FILTER MONAD_SOURCES EXCLUDE REGEX "src/test_.*\\.cpp")
+list(FILTER MONAD_SOURCES EXCLUDE REGEX "src/python_bindings.*\\.cpp")
+list(FILTER MONAD_SOURCES EXCLUDE REGEX "src/UniversalEngine.cpp")
 
-# Include the runner implementations (formerly mains)
-add_executable(MonadEngine ${ALL_SOURCES} 
-    "src/UniversalEngine.cpp" 
-    "src/main_two_asset.cpp" 
-    "src/main_experiment_tt.cpp"
-)
+# Core Library
+add_library(MonadLib STATIC ${MONAD_SOURCES} ${ZIGEN_SOURCES})
+target_compile_definitions(MonadLib PUBLIC ZIGEN_USE_CUDA)
+target_link_libraries(MonadLib PUBLIC CUDA::cudart CUDA::cublas)
 
-# Legacy Targets (optional, can keep for back-compat)
-# add_executable(MonadTwoAssetCUDA ${ALL_SOURCES} "src/main_two_asset.cpp")
+# Zigen Verification Targets
+add_executable(ZigenCheck "src/test_zigen_integration.cpp")
+target_link_libraries(ZigenCheck PRIVATE MonadLib CUDA::cudart)
 
+add_executable(MarketClearingDemo "src/main_two_asset.cpp")
+target_link_libraries(MarketClearingDemo PRIVATE MonadLib CUDA::cudart CUDA::cublas)
 
-# Link against CUDA Runtime
-target_link_libraries(MonadEngine PRIVATE CUDA::cudart)
+add_executable(HankSSZigen "src/test_hank_ss_zigen.cpp")
+target_link_libraries(HankSSZigen PRIVATE MonadLib CUDA::cudart CUDA::cublas)
+
+add_executable(ZigenCudaBasic "src/test_zigen_cuda_basic.cpp")
+target_link_libraries(ZigenCudaBasic PRIVATE MonadLib CUDA::cudart CUDA::cublas)
+
+add_executable(HybridHankTest "src/test_hybrid_hank.cpp")
+target_link_libraries(HybridHankTest PRIVATE MonadLib CUDA::cudart CUDA::cublas)
+
+add_executable(HeaderTest "src/test_headers.cpp")
+target_link_libraries(HeaderTest PRIVATE MonadLib CUDA::cudart CUDA::cublas)
+
+add_executable(HybridHankBenchmark "src/benchmark_hybrid_hank.cpp")
+target_link_libraries(HybridHankBenchmark PRIVATE MonadLib CUDA::cudart CUDA::cublas)
+
+# Link OpenMP if available (for Zigen acceleration)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(ZigenCheck PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(MarketClearingDemo PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(HankSSZigen PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP found - Zigen will use parallel execution")
+else()
+    message(WARNING "OpenMP not found - Zigen will run single-threaded")
+endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    target_compile_options(MonadEngine PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
+    target_compile_options(ZigenCheck PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
+    target_compile_options(MarketClearingDemo PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
+    target_compile_options(HankSSZigen PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math>)
 endif()
 """
 
 with open("CMakeLists.txt", "w") as f:
     f.write(content)
-print("CMakeLists.txt updated with CUDAToolkit.")
+print("CMakeLists.txt updated with ZigenCheck target.")

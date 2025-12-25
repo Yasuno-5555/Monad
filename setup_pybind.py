@@ -22,7 +22,8 @@ class get_eigen_include:
         candidates = [
             "C:/eigen",              # Windows common
             "C:/eigen3",
-            "3rdparty/eigen",        # Local download
+            "C:/eigen3",
+            os.path.abspath("3rdparty/eigen"),        # Local download
             os.path.expanduser("~/eigen"),
             "/usr/include/eigen3",   # Linux
             "/usr/local/include/eigen3",
@@ -42,7 +43,7 @@ class get_eigen_include:
 ext_modules = [
     Extension(
         'monad.monad_core',  # Will be importable as monad.monad_core
-        sources=['src/python_bindings.cpp'],
+        sources=[os.path.join('src', 'python_bindings.cpp')],
         include_dirs=[
             get_pybind_include(),
             get_eigen_include(),
