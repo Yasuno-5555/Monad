@@ -50,8 +50,14 @@ int main(int argc, char** argv) {
     params.r_a = 0.02;
     params.r_h = 0.035; // Slightly higher return for H
     params.sigma = 2.0;
-    params.chi = 0.05;
-    params.fiscal.tax_rule.cgt_rate = 0.20; // 20% CGT
+    params.chi0 = 0.05; // Fixed Cost
+    params.chi1 = 0.05; // Quadratic Cost
+    params.chi2 = 0.0;
+    
+    // Complexity: Wealth Tax
+    params.fiscal.tax_rule.cgt_rate = 0.20; 
+    params.wealth_tax_rate = 0.01;   // 1% Wealth Tax
+    params.wealth_tax_thresh = 100.0; // Threshold
 
     // Host buffers for result retrieval (minimal)
     std::vector<double> h_V(total_size);
@@ -70,9 +76,11 @@ int main(int argc, char** argv) {
     gpu.upload_grids(m_nodes.data(), a_nodes.data(), h_nodes.data(), process.z_grid.data(), 
                      process.Pi_flat.data(), nm, na, nh, nz);
                      
-    gpu.set_params(params.beta, params.r_m, params.r_a, params.r_h, params.chi, params.sigma,
+    gpu.set_params(params.beta, params.r_m, params.r_a, params.r_h, 
+                   params.chi0, params.chi1, params.chi2, params.sigma,
                    params.fiscal.tax_rule.lambda, params.fiscal.tax_rule.tau, 
-                   params.fiscal.tax_rule.transfer, params.fiscal.tax_rule.cgt_rate);
+                   params.fiscal.tax_rule.transfer, params.fiscal.tax_rule.cgt_rate,
+                   params.wealth_tax_rate, params.wealth_tax_thresh);
     
     // Placeholders for output (we strictly don't need full policy on host every iter, but API requires pointers)
     // To save PCIe bandwidth, we could modify backend to not copy back, but for now let's just stick to API.
@@ -136,6 +144,21 @@ int main(int argc, char** argv) {
     std::cout << "-----------------------------------" << std::endl;
     if(error <= tol) {
         std::cout << "CONVERGED in " << iter << " iterations." << std::endl;
+        
+        // --- Phase G9: Monte Carlo Simulation ---
+        std::cout << "\n=== Starting Monte Carlo Simulation ===" << std::endl;
+        int n_sim = 10000;
+        int t_sim = 1000;
+        std::vector<double> hist;
+        
+        auto sim_start = std::chrono::high_resolution_clock::now();
+        gpu.simulate(n_sim, t_sim, hist);
+        auto sim_end = std::chrono::high_resolution_clock::now();
+        long long sim_ms = std::chrono::duration_cast<std::chrono::milliseconds>(sim_end - sim_start).count();
+        
+        std::cout << "Simulation Time: " << sim_ms << " ms" << std::endl;
+        std::cout << "Mean Wealth (End): " << hist.back() << std::endl;
+
     } else {
         std::cout << "FAILED to converge within " << max_iter << " iterations." << std::endl;
     }

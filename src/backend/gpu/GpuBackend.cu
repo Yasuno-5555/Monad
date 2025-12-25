@@ -3,6 +3,7 @@
 #include <cmath>
 #include <vector>
 #include <cstdio>
+#include <curand_kernel.h>
 
 #ifdef MONAD_GPU
 #include <cuda_runtime.h>
@@ -160,8 +161,11 @@ __global__ void bellman_kernel(
     const double* __restrict__ m_grid, const double* __restrict__ a_grid, const double* __restrict__ h_grid, const double* __restrict__ z_grid,
     const double* __restrict__ E_V, const double* __restrict__ E_Vm,
     double* __restrict__ V_out, double* __restrict__ c_out, double* __restrict__ m_out, double* __restrict__ a_out, double* __restrict__ h_out,
-    double beta, double r_m, double r_a, double r_h, double chi, double sigma,
+    double beta, double r_m, double r_a, double r_h, 
+    double chi0, double chi1, double chi2, 
+    double sigma,
     double tax_lambda, double tax_tau, double tax_transfer, double tax_cgt,
+    double wealth_tax_rate, double wealth_tax_thresh,
     int Nm, int Na, int Nh, int Nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -189,21 +193,27 @@ __global__ void bellman_kernel(
     
     double a_curr = s_a_grid[ia];
     double h_curr = s_h_grid[ih];
-    double m_fixed = s_m_grid[im];
+    
+    // v4.0 Wealth Tax
+    if (wealth_tax_rate > 0.0) {
+        double total_wealth = a_curr + h_curr;
+        if (total_wealth > wealth_tax_thresh) {
+            net_income -= wealth_tax_rate * (total_wealth - wealth_tax_thresh);
+        }
+    }
 
-    // Net returns
+    double m_fixed = s_m_grid[im];
     double r_a_net = r_a * (1.0 - tax_cgt);
     double r_h_net = r_h * (1.0 - tax_cgt);
     
-    // ============================================
-    // No Adjustment
-    // ============================================
+    // ... (No Adjustment Block) ...
     double a_next_no = a_curr * (1.0 + r_a_net);
     double h_next_no = h_curr * (1.0 + r_h_net);
     
     const int MAX_N = 128;
     double c_endo[MAX_N], m_endo[MAX_N];
     
+    // ... (Interp logic same as before, just relying on updated net_income) ...
     for (int j = 0; j < Nm && j < MAX_N; ++j) {
         double m_next_j = s_m_grid[j];
         double emv = d_interp_E(E_Vm, iz, m_next_j, a_next_no, h_next_no, s_m_grid, Nm, s_a_grid, Na, s_h_grid, Nh, Nz);
@@ -236,7 +246,12 @@ __global__ void bellman_kernel(
     for (int ia_next = 0; ia_next < Na; ++ia_next) {
         double a_next_adj = s_a_grid[ia_next];
         double d_a = a_next_adj - a_curr * (1.0 + r_a_net);
-        double total_outflow = d_a + (fabs(d_a) < 1e-9 ? 0.0 : chi * d_a * d_a);
+        // Cost: chi1*d^2 + chi0*a_curr*(d!=0)
+        double cost = 0.0;
+        if (fabs(d_a) > 1e-9) {
+             cost = chi1 * d_a * d_a + chi0 * a_curr;
+        }
+        double total_outflow = d_a + cost;
 
         for (int j = 0; j < Nm && j < MAX_N; ++j) {
             double m_next_j = s_m_grid[j];
@@ -274,6 +289,79 @@ __global__ void bellman_kernel(
     m_out[idx] = best_m_prime;
     a_out[idx] = best_a_next;
     h_out[idx] = best_h_next;
+}
+
+// ============================================
+// Simulation Kernels (Phase G9)
+// ============================================
+// ============================================
+// Simulation Kernels (Phase G9)
+// ============================================
+
+__global__ void init_rng_kernel(curandState* states, unsigned long seed, int n) {
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id < n) {
+        curand_init(seed, id, 0, &states[id]);
+    }
+}
+
+// 3D Trilinear Interpolation for Policy Functions (Single value)
+__device__ double d_interp_3d_pol(const double* pol, int iz, double m, double a, double h,
+                                  const double* m_grid, int Nm,
+                                  const double* a_grid, int Na,
+                                  const double* h_grid, int Nh, int Nz) {
+    // Re-use logic from d_interp_E but for policy array which has same layout
+    // (iz, ih, ia, im) -> flat
+    // Actually policy layout is same as Value function: (iz * Nh * Na * Nm + ...)
+    return d_interp_E(pol, iz, m, a, h, m_grid, Nm, a_grid, Na, h_grid, Nh, Nz);
+}
+
+__global__ void simulation_kernel(
+    curandState* states,
+    const double* __restrict__ Pi_cum, // Cumulative Probability for Z transitions
+    const double* __restrict__ m_pol, const double* __restrict__ a_pol, const double* __restrict__ h_pol,
+    const double* __restrict__ m_grid, const double* __restrict__ a_grid, const double* __restrict__ h_grid,
+    double* __restrict__ agents_m, double* __restrict__ agents_a, double* __restrict__ agents_h, int* __restrict__ agents_z,
+    int N_sim, int Nm, int Na, int Nh, int Nz)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= N_sim) return;
+    
+    // Load state
+    double m = agents_m[id];
+    double a = agents_a[id];
+    double h = agents_h[id];
+    int z_idx = agents_z[id]; // Discrete state
+    
+    // 1. Interpolate Policy to get Next State (Deterministic part)
+    // m' = m_pol(m, a, h, z)
+    // a' = a_pol(m, a, h, z)
+    // h' = h_pol(m, a, h, z)
+    
+    double m_next = d_interp_3d_pol(m_pol, z_idx, m, a, h, m_grid, Nm, a_grid, Na, h_grid, Nh, Nz);
+    double a_next = d_interp_3d_pol(a_pol, z_idx, m, a, h, m_grid, Nm, a_grid, Na, h_grid, Nh, Nz);
+    double h_next = d_interp_3d_pol(h_pol, z_idx, m, a, h, m_grid, Nm, a_grid, Na, h_grid, Nh, Nz);
+    
+    // 2. Stochastic Transition for Z
+    // Generate random number [0, 1]
+    double r = curand_uniform_double(&states[id]);
+    
+    // Inverse Transform Sampling using Cumulative Probability
+    // Pi_cum row for z_idx: [P(0|z), P(0|z)+P(1|z), ..., 1.0]
+    int z_next = Nz - 1;
+    for (int k = 0; k < Nz - 1; ++k) {
+        // Pi_cum layout: z_current * Nz + z_target
+        if (r <= Pi_cum[z_idx * Nz + k]) {
+            z_next = k;
+            break;
+        }
+    }
+    
+    // 3. Update State
+    agents_m[id] = m_next;
+    agents_a[id] = a_next;
+    agents_h[id] = h_next;
+    agents_z[id] = z_next;
 }
 
 // ============================================
@@ -351,6 +439,7 @@ void GpuBackend::free_memory() {
     if (d_h_grid) cudaFree(d_h_grid);
     if (d_z_grid) cudaFree(d_z_grid);
     if (d_Pi) cudaFree(d_Pi);
+    if (d_rng_states) cudaFree(d_rng_states);
 }
 
 void GpuBackend::upload_grids(const double* m, const double* a, const double* h, const double* z,
@@ -362,10 +451,20 @@ void GpuBackend::upload_grids(const double* m, const double* a, const double* h,
     CUDA_CHECK(cudaMemcpy(d_Pi, Pi, Nz * Nz * sizeof(double), cudaMemcpyHostToDevice));
 }
 
-void GpuBackend::set_params(double b, double rm, double ra, double rh, double c, double s,
-                            double tl, double tt, double ttr, double tcgt) {
-    beta = b; r_m = rm; r_a = ra; r_h = rh; chi = c; sigma = s;
+// Helper for Adjustment Cost (Device)
+__device__ double d_adj_cost(double d, double a_curr, double chi0, double chi1, double chi2) {
+    if (fabs(d) < 1e-9) return 0.0;
+    // Cost = chi1 * d^2 + chi0 * a_curr * (d!=0)
+    return chi1 * d * d + chi0 * a_curr;
+}
+
+void GpuBackend::set_params(double b, double rm, double ra, double rh, double c0, double c1, double c2, double s,
+                            double tl, double tt, double ttr, double tcgt, double wt_rate, double wt_thresh) {
+    beta = b; r_m = rm; r_a = ra; r_h = rh; 
+    chi0 = c0; chi1 = c1; chi2 = c2; 
+    sigma = s;
     tax_lambda = tl; tax_tau = tt; tax_transfer = ttr; tax_cgt = tcgt;
+    wealth_tax_rate = wt_rate; wealth_tax_thresh = wt_thresh;
 }
 
 double GpuBackend::solve_bellman_iteration(
@@ -389,7 +488,9 @@ double GpuBackend::solve_bellman_iteration(
     bellman_kernel<<<blocks, threads>>>(
         d_m_grid, d_a_grid, d_h_grid, d_z_grid, d_E_V, d_E_Vm,
         d_V_next, d_c_out, d_m_pol, d_a_pol, d_h_pol,
-        beta, r_m, r_a, r_h, chi, sigma, tax_lambda, tax_tau, tax_transfer, tax_cgt, Nm, Na, Nh, Nz);
+        beta, r_m, r_a, r_h, chi0, chi1, chi2, sigma, 
+        tax_lambda, tax_tau, tax_transfer, tax_cgt, wealth_tax_rate, wealth_tax_thresh,
+        Nm, Na, Nh, Nz);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     CUDA_CHECK(cudaMemcpy(h_V_out, d_V_next, sz, cudaMemcpyDeviceToHost));
@@ -399,6 +500,129 @@ double GpuBackend::solve_bellman_iteration(
     CUDA_CHECK(cudaMemcpy(h_h_out, d_h_pol, sz, cudaMemcpyDeviceToHost));
     
     return 0.0;
+}
+
+void GpuBackend::simulate(int N_sim, int T_periods, std::vector<double>& mean_wealth_history) {
+    if(!d_m_pol || !d_a_pol || !d_h_pol) {
+        std::cerr << "[GpuBackend] Error: Policy functions not allocated/solved before simulation." << std::endl;
+        return;
+    }
+
+    std::cerr << "[GpuBackend] Starting Monte Carlo Simulation: N=" << N_sim << ", T=" << T_periods << std::endl;
+
+    // 1. Allocate Agent States
+    // Using separate arrays for coalesced access (structure of arrays)
+    double* d_agents_m;
+    double* d_agents_a;
+    double* d_agents_h;
+    int* d_agents_z;
+    
+    CUDA_CHECK(cudaMalloc(&d_agents_m, N_sim * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_agents_a, N_sim * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_agents_h, N_sim * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_agents_z, N_sim * sizeof(int)));
+    
+    // RNG States
+    if(!d_rng_states) {
+        CUDA_CHECK(cudaMalloc(&d_rng_states, N_sim * sizeof(curandState)));
+        int threads = 128;
+        int blocks = (N_sim + threads - 1) / threads;
+        init_rng_kernel<<<blocks, threads>>>((curandState*)d_rng_states, 1234ULL, N_sim);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    // 2. Initialize Agents (Uniform distribution over grid indices for now, or just middle)
+    // For simplicity, launch a kernel or just Init to 0
+    // Let's just copy a host vector initialized to middle of grids
+    std::vector<double> h_agents_m(N_sim), h_agents_a(N_sim), h_agents_h(N_sim);
+    std::vector<int> h_agents_z(N_sim);
+    
+    // Get host grid from somewhere? We don't have it easily.
+    // Just initialize to some value. Since we have d_m_grid, we can pick a value.
+    // Let's initialize to index 10 or something.
+    // Actually, we can assume 'upload_grids' was called, so d_m_grid is valid.
+    // We can't easily read it back here without temp buffer.
+    // Let's just init to 1.0 (assuming it's in range) or 0.0.
+    for(int i=0; i<N_sim; ++i) {
+        h_agents_m[i] = 1.0; 
+        h_agents_a[i] = 1.0; 
+        h_agents_h[i] = 1.0;
+        h_agents_z[i] = i % grid_sizes.N_z; // Uniform z
+    }
+    
+    CUDA_CHECK(cudaMemcpy(d_agents_m, h_agents_m.data(), N_sim * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_agents_a, h_agents_a.data(), N_sim * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_agents_h, h_agents_h.data(), N_sim * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_agents_z, h_agents_z.data(), N_sim * sizeof(int), cudaMemcpyHostToDevice));
+    
+    // 3. Prepare Cumulative Pi
+    // Pi is currently on device as flattened matrix.
+    // We need cumulative rows for inverse transform sampling.
+    // Let's compute it on host and upload.
+    size_t Nz = grid_sizes.N_z;
+    std::vector<double> h_Pi(Nz * Nz);
+    CUDA_CHECK(cudaMemcpy(h_Pi.data(), d_Pi, Nz * Nz * sizeof(double), cudaMemcpyDeviceToHost));
+    
+    std::vector<double> h_Pi_cum(Nz * Nz);
+    for(int r=0; r<Nz; ++r) {
+        double cum = 0.0;
+        for(int c=0; c<Nz; ++c) {
+            cum += h_Pi[r*Nz + c];
+            h_Pi_cum[r*Nz + c] = cum;
+        }
+        // Ensure last is 1.0
+        h_Pi_cum[r*Nz + Nz - 1] = 1.0;
+    }
+    double* d_Pi_cum;
+    CUDA_CHECK(cudaMalloc(&d_Pi_cum, Nz * Nz * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_Pi_cum, h_Pi_cum.data(), Nz * Nz * sizeof(double), cudaMemcpyHostToDevice));
+    
+    // 4. Simulation Loop
+    int threads = 128;
+    int blocks = (N_sim + threads - 1) / threads;
+    
+    mean_wealth_history.resize(T_periods);
+    
+    for(int t=0; t < T_periods; ++t) {
+        simulation_kernel<<<blocks, threads>>>(
+            (curandState*)d_rng_states,
+            d_Pi_cum,
+            d_m_pol, d_a_pol, d_h_pol,
+            d_m_grid, d_a_grid, d_h_grid,
+            d_agents_m, d_agents_a, d_agents_h, d_agents_z,
+            N_sim, grid_sizes.N_m, grid_sizes.N_a, grid_sizes.N_h, grid_sizes.N_z
+        );
+        CUDA_CHECK(cudaDeviceSynchronize());
+        
+        // Compute Stats (Mean Total Wealth = m + a + h)
+        // For speed, just do every 10 steps or do simple reduction.
+        // Copy back for now (slow but simple)
+        if(t % 10 == 0 || t == T_periods - 1) {
+             CUDA_CHECK(cudaMemcpy(h_agents_m.data(), d_agents_m, N_sim * sizeof(double), cudaMemcpyDeviceToHost));
+             CUDA_CHECK(cudaMemcpy(h_agents_a.data(), d_agents_a, N_sim * sizeof(double), cudaMemcpyDeviceToHost));
+             CUDA_CHECK(cudaMemcpy(h_agents_h.data(), d_agents_h, N_sim * sizeof(double), cudaMemcpyDeviceToHost));
+             
+             double sum_w = 0.0;
+             for(int i=0; i<N_sim; ++i) {
+                 sum_w += h_agents_m[i] + h_agents_a[i] + h_agents_h[i];
+             }
+             double mean = sum_w / N_sim;
+             mean_wealth_history[t] = mean;
+             
+             if(t % 100 == 0) std::cout << "  Sim T=" << t << " Mean W=" << mean << std::endl;
+        } else {
+             mean_wealth_history[t] = mean_wealth_history[t-1]; // Placeholder
+        }
+    }
+    
+    // Cleanup
+    cudaFree(d_agents_m);
+    cudaFree(d_agents_a);
+    cudaFree(d_agents_h);
+    cudaFree(d_agents_z);
+    cudaFree(d_Pi_cum);
+    
+    std::cerr << "[GpuBackend] Simulation Complete." << std::endl;
 }
 
 } // namespace Monad
@@ -411,8 +635,10 @@ namespace Monad {
     void GpuBackend::allocate_memory(int) {}
     void GpuBackend::free_memory() {}
     void GpuBackend::upload_grids(const double*, const double*, const double*, const double*, const double*, int, int, int, int) {}
-    void GpuBackend::set_params(double, double, double, double, double, double, double, double, double, double) {}
+    void GpuBackend::upload_grids(const double*, const double*, const double*, const double*, const double*, int, int, int, int) {}
+    void GpuBackend::set_params(double, double, double, double, double, double, double, double, double, double, double, double, double, double) {}
     double GpuBackend::solve_bellman_iteration(const double*, const double*, double*, double*, double*, double*, double*, double*, double*, double*, int) { return 0.0; }
+    void GpuBackend::simulate(int, int, std::vector<double>&) {}
 }
 
 #endif

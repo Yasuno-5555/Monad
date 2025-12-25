@@ -11,13 +11,18 @@ struct ThreeAssetParam {
     double r_m = -0.02; // Liquid return
     double r_a = 0.02;  // Illiquid return 1
     double r_h = 0.03;  // Illiquid return 2 (Housing/Capital)
-    double chi = 0.033; // Adjustment cost scale
+    double chi0 = 0.05; // Fixed cost
+    double chi1 = 0.05; // Linear/Quadratic (chi * d^2)
+    double chi2 = 0.0;  // Asymmetric or Higher order
+    
     double sigma = 2.0; // CRRA curvature
     double m_min = 0.0; // Borrowing limit
     
-    // v3.0 Fiscal with CGT
+    // v3.0 Fiscal with CGT & Wealth Tax
     FiscalBlock::FiscalPolicy fiscal;
     double capital_gains_tax = 0.15;
+    double wealth_tax_rate = 0.0;    // Wealth Tax Rate
+    double wealth_tax_thresh = 0.0;  // Threshold for Wealth Tax
     
     // Compute Config
     bool use_gpu = false;

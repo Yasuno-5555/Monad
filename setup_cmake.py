@@ -31,7 +31,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_ARCHITECTURES "native")
 
-find_package(CUDAToolkit REQUIRED COMPONENTS cudart cublas)
+find_package(CUDAToolkit REQUIRED COMPONENTS cudart cublas curand)
 find_package(OpenMP)
 
 # ABSOLUTE INCLUDE PATHS
@@ -43,12 +43,12 @@ include_directories("{project_root}/src")
 
 add_library(MonadLib STATIC {lib_sources_joined})
 target_compile_definitions(MonadLib PUBLIC ZIGEN_USE_CUDA MONAD_GPU)
-target_link_libraries(MonadLib PUBLIC CUDA::cudart CUDA::cublas)
+target_link_libraries(MonadLib PUBLIC CUDA::cudart CUDA::cublas CUDA::curand)
 
 # New Isolated Target for Debugging
 add_library(MonadCore STATIC {monad_only_src})
 target_compile_definitions(MonadCore PUBLIC MONAD_GPU)
-target_link_libraries(MonadCore PUBLIC CUDA::cudart CUDA::cublas)
+target_link_libraries(MonadCore PUBLIC CUDA::cudart CUDA::cublas CUDA::curand)
 
 add_executable(MarketClearingDemo "{demo_src_2}")
 target_link_libraries(MarketClearingDemo PRIVATE MonadLib CUDA::cudart CUDA::cublas)
@@ -57,7 +57,7 @@ add_executable(ThreeAssetDemo "{demo_src_3}")
 target_link_libraries(ThreeAssetDemo PRIVATE MonadCore CUDA::cudart CUDA::cublas)
 
 add_executable(ThreeAssetFull "{demo_src_4}")
-target_link_libraries(ThreeAssetFull PRIVATE MonadCore CUDA::cudart CUDA::cublas)
+target_link_libraries(ThreeAssetFull PRIVATE MonadCore CUDA::cudart CUDA::cublas CUDA::curand)
 
 if(OpenMP_CXX_FOUND)
     target_link_libraries(MarketClearingDemo PRIVATE OpenMP::OpenMP_CXX)

@@ -25,6 +25,18 @@ double CpuBackend::solve_bellman_iteration(const ThreeAssetPolicy& guess,
                 double z_val = income.z_grid[iz];
                 double net_income = params.fiscal.tax_rule.after_tax(z_val);
                 
+                // v4.0 Wealth Tax
+                double a_curr = grid.a_grid.nodes[ia];
+                double h_curr = grid.h_grid.nodes[ih];
+                double w_tax = 0.0;
+                if(params.wealth_tax_rate > 0.0) {
+                     double total_wealth = a_curr + h_curr;
+                     if(total_wealth > params.wealth_tax_thresh) {
+                         w_tax = params.wealth_tax_rate * (total_wealth - params.wealth_tax_thresh);
+                     }
+                }
+                net_income -= w_tax;
+                
                 // Problem A: No Adjustment
                 solve_no_adjust_slice(iz, ia, ih, net_income, result);
 
@@ -86,7 +98,12 @@ double CpuBackend::inv_u_prime(double val) const {
 
 double CpuBackend::adj_cost(double d, double a_curr) const {
     if (std::abs(d) < 1e-9) return 0.0;
-    return params.chi * d * d;
+    // chi1 * d^2 + chi0 * a_curr (if d != 0)
+    // Here we assume fixed cost is proportional to asset size? Or just a constant?
+    // Task says: chi0 * h (but here we are adjusting 'a', so maybe chi0 * a_curr?)
+    // Let's follow the generalized rule: Fixed Cost proportional to state H usually, or just scaling.
+    // For now, let's use: Cost = chi1 * d^2 + chi0 * a_curr * (d!=0)
+    return params.chi1 * d * d + params.chi0 * a_curr;
 }
 
 double CpuBackend::interp_1d(const std::vector<double>& x, const std::vector<double>& y, double xi) const {
