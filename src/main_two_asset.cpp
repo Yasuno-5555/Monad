@@ -15,6 +15,8 @@
 #include "backend/gpu/GpuBackend.cuh"
 #endif
 
+#include <chrono>
+
 int main(int argc, char** argv) {
     std::cout << "=== G2.5: Small Grid Convergence (10x10x3) ===" << std::endl;
     
@@ -89,6 +91,7 @@ int main(int argc, char** argv) {
     std::cout << "\nIter | dV_cpu     | dV_gpu     | V_diff     | c_diff" << std::endl;
     std::cout << "-----|------------|------------|------------|------------" << std::endl;
     
+    auto start = std::chrono::high_resolution_clock::now();
     bool converged = false;
     for (int iter = 0; iter < MAX_ITER; ++iter) {
         solver.solve_bellman(cpu_pol, cpu_next, income);
@@ -138,6 +141,10 @@ int main(int argc, char** argv) {
     if (!converged) {
         std::cout << "\n*** Not converged after " << MAX_ITER << " iterations ***" << std::endl;
     }
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    std::cout << "\nTotal Solver Time: " << duration << " ms" << std::endl;
     
     // Final comparison
     double final_V_diff = 0.0, final_c_diff = 0.0;

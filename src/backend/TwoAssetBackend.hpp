@@ -5,18 +5,18 @@
 
 namespace Monad {
 
-class TwoAssetBackend {
+class ThreeAssetBackend {
 public:
-    virtual ~TwoAssetBackend() = default;
+    virtual ~ThreeAssetBackend() = default;
 
     // Core Bellman Solver Interface
-    // Returns max diff for convergence check
-    virtual double solve_bellman_iteration(const TwoAssetPolicy& guess, 
-                                           TwoAssetPolicy& result, 
+    virtual double solve_bellman_iteration(const ThreeAssetPolicy& guess, 
+                                           ThreeAssetPolicy& result, 
                                            const IncomeProcess& income) = 0;
 
-    // Initialization Hook (Optional)
-    virtual void initialize(const TwoAssetPolicy& initial_guess) {}
+    virtual void initialize(const ThreeAssetPolicy& initial_guess) {}
 };
+
+using TwoAssetBackend = ThreeAssetBackend;
 
 } // namespace Monad

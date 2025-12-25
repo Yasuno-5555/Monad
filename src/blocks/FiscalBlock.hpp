@@ -21,13 +21,22 @@ public:
         // Transfer Rule (Lump-sum or Targeted)
         double transfer = 0.0; 
         
-        // Calculate After-Tax Income (Disposable)
+        // v3.0: Capital Gains Tax (CGT)
+        double cgt_rate = 0.0; // Flat tax on asset returns
+        
+        // Calculate After-Tax Income (Disposable) from Labor/Productivity
         double after_tax(double pre_tax_income) const {
             if (pre_tax_income <= 1e-9) return transfer; // Floor at transfer
             
             // HSV Formulation
             double post_tax = lambda * std::pow(pre_tax_income, 1.0 - tau);
             return post_tax + transfer;
+        }
+
+        // Calculate After-Tax return for assets (Simple flat CGT)
+        double after_tax_return(double return_rate) const {
+            if (return_rate <= 0.0) return return_rate; // No tax on losses (simplification)
+            return return_rate * (1.0 - cgt_rate);
         }
         
         // Calculate Tax Paid

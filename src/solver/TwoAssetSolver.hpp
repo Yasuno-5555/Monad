@@ -8,22 +8,24 @@
 
 namespace Monad {
 
-class TwoAssetSolver {
-    std::unique_ptr<TwoAssetBackend> backend;
+class ThreeAssetSolver {
+    std::unique_ptr<ThreeAssetBackend> backend;
 
 public:
-    TwoAssetSolver(std::unique_ptr<TwoAssetBackend> backend_ptr) 
+    ThreeAssetSolver(std::unique_ptr<ThreeAssetBackend> backend_ptr) 
         : backend(std::move(backend_ptr)) {
         if (!backend) {
-            throw std::runtime_error("TwoAssetSolver: Backend cannot be null.");
+            throw std::runtime_error("ThreeAssetSolver: Backend cannot be null.");
         }
     }
     
     // Delegate to backend
-    double solve_bellman(const TwoAssetPolicy& guess, TwoAssetPolicy& result, 
+    double solve_bellman(const ThreeAssetPolicy& guess, ThreeAssetPolicy& result, 
                          const IncomeProcess& income) {
         return backend->solve_bellman_iteration(guess, result, income);
     }
 };
+
+using TwoAssetSolver = ThreeAssetSolver;
 
 } // namespace Monad
