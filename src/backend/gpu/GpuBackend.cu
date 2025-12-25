@@ -602,14 +602,24 @@ void GpuBackend::simulate(int N_sim, int T_periods, std::vector<double>& mean_we
              CUDA_CHECK(cudaMemcpy(h_agents_a.data(), d_agents_a, N_sim * sizeof(double), cudaMemcpyDeviceToHost));
              CUDA_CHECK(cudaMemcpy(h_agents_h.data(), d_agents_h, N_sim * sizeof(double), cudaMemcpyDeviceToHost));
              
-             double sum_w = 0.0;
+             double sum_w = 0.0, sum_m = 0.0, sum_a = 0.0, sum_h = 0.0;
              for(int i=0; i<N_sim; ++i) {
+                 sum_m += h_agents_m[i];
+                 sum_a += h_agents_a[i];
+                 sum_h += h_agents_h[i];
                  sum_w += h_agents_m[i] + h_agents_a[i] + h_agents_h[i];
              }
              double mean = sum_w / N_sim;
+             double mean_m = sum_m / N_sim;
+             double mean_a = sum_a / N_sim;
+             double mean_h = sum_h / N_sim;
+             
              mean_wealth_history[t] = mean;
              
-             if(t % 100 == 0) std::cout << "  Sim T=" << t << " Mean W=" << mean << std::endl;
+             if(t % 100 == 0) {
+                 std::cout << "  Sim T=" << t << " Mean W=" << mean 
+                           << " (M=" << mean_m << ", A=" << mean_a << ", H=" << mean_h << ")" << std::endl;
+             }
         } else {
              mean_wealth_history[t] = mean_wealth_history[t-1]; // Placeholder
         }

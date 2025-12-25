@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
 
     double error = 1.0;
     int iter = 0;
-    int max_iter = 2000;
+    int max_iter = 50; // Reduced for insight extraction
     double tol = 1e-7; // Convergence tolerance
 
     auto total_start = std::chrono::high_resolution_clock::now();
@@ -142,8 +142,9 @@ int main(int argc, char** argv) {
     long long total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count();
 
     std::cout << "-----------------------------------" << std::endl;
-    if(error <= tol) {
-        std::cout << "CONVERGED in " << iter << " iterations." << std::endl;
+    if(error <= tol || iter >= max_iter) {
+        if(error <= tol) std::cout << "CONVERGED in " << iter << " iterations." << std::endl;
+        else std::cout << "STOPPED at max_iter=" << max_iter << " (Error=" << error << ")" << std::endl;
         
         // --- Phase G9: Monte Carlo Simulation ---
         std::cout << "\n=== Starting Monte Carlo Simulation ===" << std::endl;
